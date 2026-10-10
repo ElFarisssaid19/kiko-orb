@@ -29,6 +29,76 @@
   --font-mono: var(--font-mono);
 }
 
+/* Kiko speech bubble animations (KikoBubble.tsx): animate-bubble-pop, animate-typing-dot… */
+@theme {
+  --animate-bubble-pop: bubble-pop 450ms both;
+  --animate-bubble-in: bubble-in 200ms ease-out both;
+  --animate-bubble-out: bubble-out 150ms ease-in both;
+  --animate-bubble-fade-in: bubble-fade-in 200ms ease-out both;
+  --animate-bubble-fade-out: bubble-fade-out 150ms ease-in both;
+  --animate-typing-dot: typing-dot 1.2s ease-in-out infinite both;
+
+  /* Spring with a small overshoot: 0.6 → 1.08 → 0.97 → 1.01 → 1 */
+  @keyframes bubble-pop {
+    0% {
+      opacity: 0;
+      scale: 0.6;
+      animation-timing-function: cubic-bezier(0.2, 0.7, 0.4, 1);
+    }
+    50% {
+      opacity: 1;
+      scale: 1.08;
+      animation-timing-function: ease-in-out;
+    }
+    72% {
+      scale: 0.97;
+      animation-timing-function: ease-in-out;
+    }
+    88% {
+      scale: 1.01;
+      animation-timing-function: ease-in-out;
+    }
+    100% {
+      opacity: 1;
+      scale: 1;
+    }
+  }
+  @keyframes bubble-in {
+    from {
+      opacity: 0;
+      scale: 0.85;
+    }
+  }
+  @keyframes bubble-out {
+    to {
+      opacity: 0;
+      scale: 0.8;
+    }
+  }
+  @keyframes bubble-fade-in {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes bubble-fade-out {
+    to {
+      opacity: 0;
+    }
+  }
+  @keyframes typing-dot {
+    0%,
+    50%,
+    100% {
+      translate: 0 0;
+      opacity: 0.4;
+    }
+    25% {
+      translate: 0 -4px;
+      opacity: 1;
+    }
+  }
+}
+
 /* The native window is transparent: only the island itself is painted. */
 html,
 body,

@@ -7,9 +7,13 @@ import {
   useKikoAnimation,
 } from "../hooks/useKikoAnimation";
 import type { Mood, Point } from "../types/kiko";
+import { KikoBubble } from "./KikoBubble";
 
 /** How long Kiko celebrates "done" before going back to idle. */
 const DONE_DURATION_MS = 4000;
+
+/** Below this width the speech bubble would dwarf Kiko, so it is never shown. */
+const BUBBLE_MIN_SIZE = 120;
 
 const FADE = "fill 300ms ease, stroke 300ms ease, opacity 300ms ease";
 
@@ -38,9 +42,21 @@ export interface KikoProps {
   lookAt?: Point | null;
   /** Called when the "done" celebration ends and Kiko is back to idle. */
   onDoneFinished?: () => void;
+  /** Speech bubble (typing dots while working, bubbleText while needsYou). Never shown below 120px. */
+  showBubble?: boolean;
+  /** Bubble message while needsYou. */
+  bubbleText?: string;
 }
 
-export function Kiko({ mood, size = 240, activeSessions = 0, lookAt = null, onDoneFinished }: KikoProps) {
+export function Kiko({
+  mood,
+  size = 240,
+  activeSessions = 0,
+  lookAt = null,
+  onDoneFinished,
+  showBubble = true,
+  bubbleText = "Where are you?",
+}: KikoProps) {
   // "done" turns back into idle by itself after DONE_DURATION_MS.
   const [shownMood, setShownMood] = useState(mood);
   const [previousMood, setPreviousMood] = useState(mood);
@@ -63,96 +79,100 @@ export function Kiko({ mood, size = 240, activeSessions = 0, lookAt = null, onDo
     return () => clearTimeout(timer);
   }, [mood]);
 
-  const rig = useKikoAnimation({ mood: shownMood, activeSessions, lookAt });
+  const rig = useKikoAnimation({ mood: shownMood, activeSessions, lookAt, size });
   const colors = PALETTES[shownMood];
 
   return (
-    <svg
-      ref={rig.svg}
-      viewBox="0 0 240 300"
-      width={size}
-      height={size * 1.25}
-      role="img"
-      aria-label={`Kiko (${shownMood})`}
-    >
-      <g style={{ opacity: shownMood === "sleeping" ? 0.5 : 1, transition: FADE }}>
-        <ellipse ref={rig.shadow} cx="120" cy="268" rx="46" ry="8" opacity="0.35" style={{ fill: "var(--orb-shadow)" }} />
+    <div className="relative shrink-0" style={{ width: size, height: size * 1.25 }}>
+      <svg
+        ref={rig.svg}
+        className="block"
+        viewBox="0 0 240 300"
+        width={size}
+        height={size * 1.25}
+        role="img"
+        aria-label={`Kiko (${shownMood})`}
+      >
+        <g style={{ opacity: shownMood === "sleeping" ? 0.5 : 1, transition: FADE }}>
+          <ellipse ref={rig.shadow} cx="120" cy="268" rx="46" ry="8" opacity="0.35" style={{ fill: "var(--orb-shadow)" }} />
 
-        <g ref={rig.body}>
-          {/* Back of the ring and satellite, hidden by the orb */}
-          <ellipse
-            cx="120"
-            cy="160"
-            rx="104"
-            ry="26"
-            fill="none"
-            strokeWidth="4"
-            opacity="0.45"
-            style={{ stroke: colors.accent, transition: FADE }}
-          />
-          <circle
-            ref={rig.satelliteBack}
-            cx={REST_POSE.satellite.x}
-            cy={REST_POSE.satellite.y}
-            r="7"
-            visibility="hidden"
-            style={{ fill: colors.satellite, transition: FADE }}
-          />
+          <g ref={rig.body}>
+            {/* Back of the ring and satellite, hidden by the orb */}
+            <ellipse
+              cx="120"
+              cy="160"
+              rx="104"
+              ry="26"
+              fill="none"
+              strokeWidth="4"
+              opacity="0.45"
+              style={{ stroke: colors.accent, transition: FADE }}
+            />
+            <circle
+              ref={rig.satelliteBack}
+              cx={REST_POSE.satellite.x}
+              cy={REST_POSE.satellite.y}
+              r="7"
+              visibility="hidden"
+              style={{ fill: colors.satellite, transition: FADE }}
+            />
 
-          {/* Orb */}
-          <circle cx="120" cy="150" r="76" style={{ fill: "var(--orb)" }} />
-          <circle
-            cx="120"
-            cy="150"
-            r="76"
-            fill="none"
-            strokeWidth="3"
-            opacity="0.6"
-            style={{ stroke: colors.accent, transition: FADE }}
-          />
-          <ellipse
-            cx="94"
-            cy="112"
-            rx="22"
-            ry="11"
-            opacity="0.14"
-            transform="rotate(-30 94 112)"
-            style={{ fill: "var(--orb-highlight)" }}
-          />
+            {/* Orb */}
+            <circle cx="120" cy="150" r="76" style={{ fill: "var(--orb)" }} />
+            <circle
+              cx="120"
+              cy="150"
+              r="76"
+              fill="none"
+              strokeWidth="3"
+              opacity="0.6"
+              style={{ stroke: colors.accent, transition: FADE }}
+            />
+            <ellipse
+              cx="94"
+              cy="112"
+              rx="22"
+              ry="11"
+              opacity="0.14"
+              transform="rotate(-30 94 112)"
+              style={{ fill: "var(--orb-highlight)" }}
+            />
 
-          {/* Face: each eye is two strokes so every mood's shape can morph into the next */}
-          <g fill="none" strokeLinecap="round" style={{ stroke: colors.face, transition: FADE }}>
-            {rig.eyes.map((eye, i) => (
-              <g key={i} ref={eye.group} transform={`translate(${EYE_CENTERS[i].x} ${EYE_CENTERS[i].y})`}>
-                {eye.strokes.map((stroke, j) => (
-                  <path
-                    key={j}
-                    ref={stroke}
-                    d={eyeStrokePath(REST_POSE.eyeStroke)}
-                    strokeWidth={REST_POSE.eyeStroke[6]}
-                  />
-                ))}
-              </g>
-            ))}
-            <path ref={rig.mouth} d={mouthPath(REST_POSE.mouth)} strokeWidth="4" />
+            {/* Face: each eye is two strokes so every mood's shape can morph into the next */}
+            <g fill="none" strokeLinecap="round" style={{ stroke: colors.face, transition: FADE }}>
+              {rig.eyes.map((eye, i) => (
+                <g key={i} ref={eye.group} transform={`translate(${EYE_CENTERS[i].x} ${EYE_CENTERS[i].y})`}>
+                  {eye.strokes.map((stroke, j) => (
+                    <path
+                      key={j}
+                      ref={stroke}
+                      d={eyeStrokePath(REST_POSE.eyeStroke)}
+                      strokeWidth={REST_POSE.eyeStroke[6]}
+                    />
+                  ))}
+                </g>
+              ))}
+              <path ref={rig.mouth} d={mouthPath(REST_POSE.mouth)} strokeWidth="4" />
+            </g>
+
+            {/* Front of the ring and satellite, over the orb */}
+            <path
+              d="M16 160 A104 26 0 0 0 224 160"
+              fill="none"
+              strokeWidth="4"
+              style={{ stroke: colors.accent, transition: FADE }}
+            />
+            <circle
+              ref={rig.satelliteFront}
+              cx={REST_POSE.satellite.x}
+              cy={REST_POSE.satellite.y}
+              r="7"
+              style={{ fill: colors.satellite, transition: FADE }}
+            />
           </g>
-
-          {/* Front of the ring and satellite, over the orb */}
-          <path
-            d="M16 160 A104 26 0 0 0 224 160"
-            fill="none"
-            strokeWidth="4"
-            style={{ stroke: colors.accent, transition: FADE }}
-          />
-          <circle
-            ref={rig.satelliteFront}
-            cx={REST_POSE.satellite.x}
-            cy={REST_POSE.satellite.y}
-            r="7"
-            style={{ fill: colors.satellite, transition: FADE }}
-          />
         </g>
-      </g>
-    </svg>
+      </svg>
+      {showBubble && size >= BUBBLE_MIN_SIZE && <KikoBubble ref={rig.bubble} mood={shownMood} text={bubbleText} />}
+    </div>
   );
 }

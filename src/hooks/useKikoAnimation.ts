@@ -30,6 +30,9 @@ const GLANCE_MS = 800;
 const GLANCE_SHIFT = 6;
 const LOOK_SHIFT = { x: 6, y: 4 };
 const LOOK_FALLOFF = 120; // distance (viewBox units) at which eyes reach half of LOOK_SHIFT
+const WIGGLE_EVERY_MS = 4000; // the wiggle lands on the first pulse peak after this, so every 3rd pulse (4.5s)
+const WIGGLE_MS = 500;
+const WIGGLE_ANGLE = 5; // deg
 
 // Smoothing time constants (s): a value covers ~95% of the way to its target in 3τ.
 const MORPH_TAU = 0.08;
@@ -124,7 +127,7 @@ export const REST_POSE = {
   satellite: satellitePosition(SATELLITE_REST_ANGLE),
 };
 
-/** SVG elements the loop moves. Colors are not animated here: they are CSS transitions in Kiko.tsx. */
+/** Elements the loop moves. Colors are not animated here: they are CSS transitions in Kiko.tsx. */
 export interface KikoRig {
   svg: RefObject<SVGSVGElement | null>;
   shadow: RefObject<SVGEllipseElement | null>;
@@ -133,6 +136,8 @@ export interface KikoRig {
   mouth: RefObject<SVGPathElement | null>;
   satelliteBack: RefObject<SVGCircleElement | null>;
   satelliteFront: RefObject<SVGCircleElement | null>;
+  /** Speech bubble wrapper: follows the body's float, bounce and shake, and wiggles while needsYou. */
+  bubble: RefObject<HTMLDivElement | null>;
 }
 
 function createRig(): KikoRig {
@@ -145,6 +150,7 @@ function createRig(): KikoRig {
     mouth: createRef(),
     satelliteBack: createRef(),
     satelliteFront: createRef(),
+    bubble: createRef(),
   };
 }
 
@@ -152,6 +158,7 @@ interface AnimationInput {
   mood: Mood;
   activeSessions: number;
   lookAt: Point | null;
+  size: number; // rendered width in px, to move the HTML bubble in step with the SVG
 }
 
 /** Everything the loop smooths or schedules between frames. */
@@ -174,6 +181,7 @@ interface AnimationState {
   glanceDir: number;
   glanceEnd: number;
   nextGlance: number;
+  wiggleStart: number;
 }
 
 function initialState(): AnimationState {
@@ -196,12 +204,13 @@ function initialState(): AnimationState {
     glanceDir: 1,
     glanceEnd: 0,
     nextGlance: 0,
+    wiggleStart: -Infinity,
   };
 }
 
 /**
  * Drives Kiko's idle life and mood changes with requestAnimationFrame: float, satellite orbit, blinks,
- * glances, pulse, bounce, shake and eye/mouth morphs. Pauses while the window is hidden, stops by itself
+ * glances, pulse, bounce, shake, bubble wiggle and eye/mouth morphs. Pauses while the window is hidden, stops by itself
  * once nothing moves (sleeping, reduced motion), and holds still under prefers-reduced-motion.
  */
 export function useKikoAnimation(input: AnimationInput): KikoRig {
@@ -282,15 +291,24 @@ function step(rig: KikoRig, s: AnimationState, input: AnimationInput, reduced: b
   s.float = approach(s.float, target.float, dt, snap ? 0 : MOTION_TAU);
   s.pulse = approach(s.pulse, target.pulse, dt, snap ? 0 : MOTION_TAU);
   s.orbitSpeed = approach(s.orbitSpeed, target.orbitSpeed, dt, snap ? 0 : MOTION_TAU);
+  const pulsePeaksBefore = pulsePeakCount(s.pulsePhase);
   s.floatPhase += (dt * 2 * Math.PI) / FLOAT_PERIOD;
   s.pulsePhase += (dt * 2 * Math.PI) / PULSE_PERIOD;
   s.angle += s.orbitSpeed * dt;
+  const pulsePeaked = pulsePeakCount(s.pulsePhase) > pulsePeaksBefore;
 
   // One-shot reactions when a mood starts.
   const bouncing = !reduced && mood === "done" && sinceMood < BOUNCE_MS;
   const shaking = !reduced && mood === "error" && sinceMood < SHAKE_MS;
   const bounceY = bouncing ? -BOUNCE_HEIGHT * Math.sin((Math.PI * sinceMood) / BOUNCE_MS) : 0;
   const shakeX = shaking ? SHAKE_AMPLITUDE * Math.sin((sinceMood / SHAKE_MS) * 6 * Math.PI) * (1 - sinceMood / SHAKE_MS) : 0;
+
+  // needsYou: the bubble wiggles on a pulse peak, at most every WIGGLE_EVERY_MS.
+  const sinceLastWiggle = now - Math.max(s.moodSince, s.wiggleStart);
+  if (!reduced && mood === "needsYou" && pulsePeaked && sinceLastWiggle >= WIGGLE_EVERY_MS) s.wiggleStart = now;
+  const sinceWiggle = now - s.wiggleStart;
+  const wiggling = !reduced && sinceWiggle < WIGGLE_MS;
+  const wiggle = wiggling ? WIGGLE_ANGLE * Math.sin((sinceWiggle / WIGGLE_MS) * 4 * Math.PI) * (1 - sinceWiggle / WIGGLE_MS) : 0;
 
   // Blinks: a started blink always finishes, even if the mood changes mid-blink.
   if (target.blinks && now >= s.nextBlink) {
@@ -324,6 +342,10 @@ function step(rig: KikoRig, s: AnimationState, input: AnimationInput, reduced: b
   );
   // The shadow shrinks a little as Kiko rises.
   rig.shadow.current?.setAttribute("transform", scaleAround(SHADOW, 1 + y * 0.012));
+  if (rig.bubble.current) {
+    const px = input.size / 240;
+    rig.bubble.current.style.transform = `translate(${f(shakeX * px)}px, ${f(y * px)}px) rotate(${f(wiggle)}deg)`;
+  }
 
   rig.eyes.forEach((eye, i) => {
     const c = EYE_CENTERS[i];
@@ -355,6 +377,7 @@ function step(rig: KikoRig, s: AnimationState, input: AnimationInput, reduced: b
     !target.glances &&
     !bouncing &&
     !shaking &&
+    !wiggling &&
     blinkScale === 1 &&
     Math.abs(s.float) < 0.05 &&
     Math.abs(s.orbitSpeed) < 0.005 &&
@@ -377,6 +400,11 @@ function eyeShiftTowards(rig: KikoRig, point: Point): [number, number] {
   if (distance === 0) return [0, 0];
   const reach = distance / (distance + LOOK_FALLOFF);
   return [(dx / distance) * LOOK_SHIFT.x * reach, (dy / distance) * LOOK_SHIFT.y * reach];
+}
+
+/** Number of pulse peaks (largest scale, phase = π mod 2π) reached at this phase. */
+function pulsePeakCount(phase: number): number {
+  return Math.floor((phase + Math.PI) / (2 * Math.PI));
 }
 
 /** Vertical eye scale `elapsed` ms into a blink: close, hold at 2px, reopen. */

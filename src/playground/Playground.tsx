@@ -16,6 +16,8 @@ export default function Playground() {
   const [mood, setMood] = useState<Mood>("idle");
   const [activeSessions, setActiveSessions] = useState(2);
   const [lookAt, setLookAt] = useState<Point | null>(null);
+  const [bubbleText, setBubbleText] = useState("Where are you?");
+  const [showBubble, setShowBubble] = useState(true);
 
   useEffect(() => {
     const onMove = (event: PointerEvent) => setLookAt({ x: event.clientX, y: event.clientY });
@@ -30,17 +32,20 @@ export default function Playground() {
 
   return (
     <div className="flex h-full flex-col items-center justify-center gap-10 overflow-auto bg-bg p-8 text-text">
+      {/* The mini Kiko sits on the left: the big one's bubble overflows to the right. */}
       <div className="flex items-end gap-16">
+        <div className="flex flex-col items-center gap-3">
+          <Kiko mood={mood} size={28} activeSessions={activeSessions} lookAt={lookAt} />
+          <span className="font-mono text-xs text-text-2">28px</span>
+        </div>
         <Kiko
           mood={mood}
           activeSessions={activeSessions}
           lookAt={lookAt}
           onDoneFinished={() => setMood("idle")}
+          showBubble={showBubble}
+          bubbleText={bubbleText}
         />
-        <div className="flex flex-col items-center gap-3">
-          <Kiko mood={mood} size={28} activeSessions={activeSessions} lookAt={lookAt} />
-          <span className="font-mono text-xs text-text-2">28px</span>
-        </div>
       </div>
 
       <div className="flex flex-wrap justify-center gap-2">
@@ -74,6 +79,27 @@ export default function Playground() {
         />
         <span className="w-3 text-text">{activeSessions}</span>
       </label>
+
+      <div className="flex flex-wrap items-center justify-center gap-6 font-mono text-sm text-text-2">
+        <label className="flex items-center gap-3">
+          bubbleText
+          <input
+            type="text"
+            value={bubbleText}
+            onChange={(event) => setBubbleText(event.target.value)}
+            className="w-56 rounded-lg border border-border bg-island px-3 py-1.5 font-ui text-text outline-none focus:border-needs-you"
+          />
+        </label>
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={showBubble}
+            onChange={(event) => setShowBubble(event.target.checked)}
+            className="accent-working"
+          />
+          showBubble
+        </label>
+      </div>
     </div>
   );
 }

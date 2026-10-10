@@ -22,13 +22,13 @@ Kiko is my BTS DWFS PFE (final-year project). It is a desktop companion that sho
 ## Layout
 
 ```
-src/components/   React components (Kiko character, Island, PermissionCard, QuestionCard)
+src/components/   React components (Kiko character, KikoBubble, Island, PermissionCard, QuestionCard)
 src/hooks/        React hooks (useKikoAnimation: Kiko's requestAnimationFrame loop and mood shapes)
 src/events/       EventSource interface + implementations (MockEventSource)
 src/store/        Zustand store (useKikoStore)
 src/types/        Shared TypeScript types (events, kiko)
 src/playground/   Dev-only pages, opened with a URL flag (`?playground`)
-src/styles/       tokens.css (design tokens) + global.css (Tailwind entry, fonts, token → utility mapping)
+src/styles/       tokens.css (design tokens) + global.css (Tailwind entry, fonts, token → utility mapping, animate-* keyframes)
 src-tauri/src/platform/   OS-specific Rust code
 docs/             PFE documentation
 ```
