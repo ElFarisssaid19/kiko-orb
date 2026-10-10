@@ -2,10 +2,10 @@
 
 use std::env;
 
-use tauri::{PhysicalPosition, WebviewWindow};
-
-/// Gap between the top of the work area (just below the GNOME top bar) and the island, in logical px.
-const TOP_MARGIN: f64 = 8.0;
+use tauri::{
+    LogicalSize, LogicalUnit, Monitor, PhysicalPosition, PhysicalRect, PixelUnit, WebviewWindow,
+    WindowSizeConstraints,
+};
 
 /// Exported by snap apps (e.g. the VS Code snap) to their child processes. They point GTK/GIO at
 /// modules built against the snap's own glibc, which crashes Kiko at startup ("symbol lookup error")
@@ -42,18 +42,55 @@ pub fn prepare_env() {
     }
 }
 
-/// Centers the window horizontally at the top of the primary monitor's work area.
+/// Centers the window horizontally at the top of the primary monitor's work area (just below the GNOME top bar).
+/// The island draws its own gap from the top edge, so the window sits flush against it.
 pub fn place_main_window(window: &WebviewWindow) -> tauri::Result<()> {
-    let Some(monitor) = window.primary_monitor()?.or(window.current_monitor()?) else {
+    let Some(monitor) = island_monitor(window)? else {
         return Ok(());
     };
-
-    let area = monitor.work_area();
     // Not `outer_size()`: tao only fills it after the first configure event, so it reads 0 while hidden.
     // The window is undecorated, so inner and outer sizes are the same.
-    let size = window.inner_size()?;
-    let x = area.position.x + (area.size.width as i32 - size.width as i32) / 2;
-    let y = area.position.y + (TOP_MARGIN * monitor.scale_factor()).round() as i32;
+    let width = window.inner_size()?.width;
+    window.set_position(top_center(monitor.work_area(), width))
+}
 
-    window.set_position(PhysicalPosition::new(x, y))
+/// Resizes the window to `width` × `height` logical px and keeps it centered at the top of the work area.
+pub fn set_island_size(window: &WebviewWindow, width: f64, height: f64) -> tauri::Result<()> {
+    let Some(monitor) = island_monitor(window)? else {
+        return Ok(());
+    };
+    let area = monitor.work_area();
+    let scale = monitor.scale_factor();
+    let width = width.min(area.size.width as f64 / scale).round();
+    let height = height.min(area.size.height as f64 / scale).round();
+
+    // The size is locked with min = max (see tauri.conf.json): move both bounds in one request, then resize.
+    let (w, h): (PixelUnit, PixelUnit) = (
+        LogicalUnit::new(width).into(),
+        LogicalUnit::new(height).into(),
+    );
+    window.set_size_constraints(WindowSizeConstraints {
+        min_width: Some(w),
+        min_height: Some(h),
+        max_width: Some(w),
+        max_height: Some(h),
+    })?;
+    window.set_size(LogicalSize::new(width, height))?;
+    window.set_position(top_center(area, (width * scale).round() as u32))?;
+
+    // Re-assert the overlay hints after the geometry change. None of these calls take focus.
+    window.set_always_on_top(true)?;
+    window.set_skip_taskbar(true)
+}
+
+fn island_monitor(window: &WebviewWindow) -> tauri::Result<Option<Monitor>> {
+    Ok(window.primary_monitor()?.or(window.current_monitor()?))
+}
+
+/// Physical position of a `width`-px wide window centered at the top of `area`.
+fn top_center(area: &PhysicalRect<i32, u32>, width: u32) -> PhysicalPosition<i32> {
+    PhysicalPosition::new(
+        area.position.x + (area.size.width as i32 - width as i32) / 2,
+        area.position.y,
+    )
 }

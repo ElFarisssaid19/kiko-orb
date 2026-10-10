@@ -26,3 +26,16 @@ pub fn place_main_window(window: &WebviewWindow) -> tauri::Result<()> {
         Ok(())
     }
 }
+
+/// Resizes the island window (logical px) and keeps it centered at the top of the screen,
+/// still transparent, on top, out of the taskbar and without taking focus.
+pub fn set_island_size(window: &WebviewWindow, width: f64, height: f64) -> tauri::Result<()> {
+    #[cfg(target_os = "linux")]
+    return linux::set_island_size(window, width, height);
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (window, width, height);
+        Ok(())
+    }
+}

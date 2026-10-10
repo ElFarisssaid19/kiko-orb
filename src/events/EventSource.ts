@@ -1,6 +1,6 @@
-import type { KikoEvent } from "../types/events";
+import type { AgentEvent } from "../types/events";
 
-export type KikoEventListener = (event: KikoEvent) => void;
+export type AgentEventListener = (event: AgentEvent) => void;
 export type Unsubscribe = () => void;
 
 /**
@@ -12,5 +12,5 @@ export type Unsubscribe = () => void;
 export interface EventSource {
   start(): void;
   stop(): void;
-  subscribe(listener: KikoEventListener): Unsubscribe;
+  subscribe(listener: AgentEventListener): Unsubscribe;
 }

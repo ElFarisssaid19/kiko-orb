@@ -22,11 +22,12 @@ Kiko is my BTS DWFS PFE (final-year project). It is a desktop companion that sho
 ## Layout
 
 ```
-src/components/   React components (Kiko character, KikoBubble, Island, PermissionCard, QuestionCard)
-src/hooks/        React hooks (useKikoAnimation: Kiko's requestAnimationFrame loop and mood shapes)
+src/components/   React components (Kiko character, KikoBubble, Island + IslandContent, PermissionCard, QuestionCard)
+src/hooks/        React hooks (useKikoAnimation: Kiko's rAF loop; useIslandWindow: native window sizing; useNow; usePrefersReducedMotion)
 src/events/       EventSource interface + implementations (MockEventSource)
 src/store/        Zustand store (useKikoStore)
 src/types/        Shared TypeScript types (events, kiko)
+src/dev/          Dev-only fixtures and keyboard shortcuts, loaded by main.tsx when import.meta.env.DEV
 src/playground/   Dev-only pages, opened with a URL flag (`?playground`)
 src/styles/       tokens.css (design tokens) + global.css (Tailwind entry, fonts, token → utility mapping, animate-* keyframes)
 src-tauri/src/platform/   OS-specific Rust code
@@ -36,15 +37,17 @@ docs/             PFE documentation
 ## Commands
 
 - `npm run tauri dev`: run the app (Vite on port 1420 + Rust)
-- `npm run dev`: frontend only, in the browser. Character playground: http://localhost:1420/?playground
+- `npm run dev`: frontend only, in the browser. Playground (character + island, dev only): http://localhost:1420/?playground
+- Dev shortcuts in the app window (click the island first so it has focus): `p`/`q` permission/question, `Shift+P`/`Shift+Q` the same after 3s, `h`/`c`/`e` hidden/compact/expanded, `f` reload fixtures, `0` clear
 - `npm run build`: type-check and build the frontend
 - `cd src-tauri && cargo clippy`: lint the Rust side
 - Rust lives in `~/.cargo/bin`. If `cargo` is not found in a non-login shell, run `source ~/.cargo/env` first.
 
 ## Linux notes
 
-- The main window is transparent, undecorated, always on top, skips the taskbar, does not take focus on start, and is 420×120. It starts hidden. `platform/linux.rs` centers it at the top of the primary monitor's work area, then shows it.
-- The size is locked with `minWidth/maxWidth/minHeight/maxHeight`, not `resizable: false`: GTK snaps non-resizable windows to the webview's natural size (420×200).
+- The main window is transparent, undecorated, always on top, skips the taskbar and does not take focus on start. It starts hidden. `platform/linux.rs` places it flush against the top of the primary monitor's work area, centered, then shows it.
+- The window is only as big as the island plus a small transparent margin. The frontend resizes it with the `set_island_size(width, height)` command (logical px; `platform/linux.rs` keeps it centered and re-asserts always-on-top and skip-taskbar). Rule: grow the window before the island grows, shrink it after the island has finished shrinking (`useIslandWindow`), so nothing is ever clipped.
+- The size is locked with min = max size constraints, not `resizable: false`: GTK snaps non-resizable windows to the webview's natural size (420×200). `set_island_size` moves both bounds in one `set_size_constraints` call.
 - Use `inner_size()`, not `outer_size()`, before the window is shown: tao reports an outer size of 0 until the first configure event.
 - On a Wayland session, `platform/linux.rs` sets `GDK_BACKEND=x11` (XWayland), because GTK3 on native Wayland cannot do always-on-top, absolute positioning or skip-taskbar. Launching with `GDK_BACKEND` already set overrides this.
 - The VS Code snap leaks `GTK_PATH`, `GIO_MODULE_DIR`, etc. into its terminal, which crashes WebKitGTK ("symbol lookup error … /snap/core20"). `platform/linux.rs` drops those variables when they point into `/snap/`.
