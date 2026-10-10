@@ -15,6 +15,11 @@
   --done: #4cc38a;
   --error: #ff6b6b;
 
+  /* Kiko character */
+  --orb: #1e2a4a;
+  --orb-shadow: #000000;
+  --orb-highlight: #ffffff;
+
   /* Fonts (files bundled locally via Fontsource, see global.css) */
   --font-ui: "Bricolage Grotesque", system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;

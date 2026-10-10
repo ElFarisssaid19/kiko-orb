@@ -23,9 +23,11 @@ Kiko is my BTS DWFS PFE (final-year project). It is a desktop companion that sho
 
 ```
 src/components/   React components (Kiko character, Island, PermissionCard, QuestionCard)
+src/hooks/        React hooks (useKikoAnimation: Kiko's requestAnimationFrame loop and mood shapes)
 src/events/       EventSource interface + implementations (MockEventSource)
 src/store/        Zustand store (useKikoStore)
-src/types/        Shared TypeScript types (events)
+src/types/        Shared TypeScript types (events, kiko)
+src/playground/   Dev-only pages, opened with a URL flag (`?playground`)
 src/styles/       tokens.css (design tokens) + global.css (Tailwind entry, fonts, token → utility mapping)
 src-tauri/src/platform/   OS-specific Rust code
 docs/             PFE documentation
@@ -34,6 +36,7 @@ docs/             PFE documentation
 ## Commands
 
 - `npm run tauri dev`: run the app (Vite on port 1420 + Rust)
+- `npm run dev`: frontend only, in the browser. Character playground: http://localhost:1420/?playground
 - `npm run build`: type-check and build the frontend
 - `cd src-tauri && cargo clippy`: lint the Rust side
 - Rust lives in `~/.cargo/bin`. If `cargo` is not found in a non-login shell, run `source ~/.cargo/env` first.
