@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+/* Fonts bundled locally (no CDN) */
+@import "@fontsource/bricolage-grotesque/400.css";
+@import "@fontsource/bricolage-grotesque/600.css";
+@import "@fontsource/bricolage-grotesque/700.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+
+@import "./tokens.css";
+
+/* Expose tokens as Tailwind utilities: bg-island, text-text-2, border-border, text-working, font-ui, font-mono… */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-island: var(--island);
+  --color-border: var(--border);
+  --color-text: var(--text);
+  --color-text-2: var(--text-2);
+  --color-working: var(--working);
+  --color-needs-you: var(--needs-you);
+  --color-done: var(--done);
+  --color-error: var(--error);
+  --font-sans: var(--font-ui);
+}
+
+/* Same names as the tokens: `reference` registers font-ui / font-mono without re-emitting the variables. */
+@theme inline reference {
+  --font-ui: var(--font-ui);
+  --font-mono: var(--font-mono);
+}
+
+/* The native window is transparent: only the island itself is painted. */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-ui);
+  color: var(--text);
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}

@@ -1,0 +1,21 @@
+/* Kiko design tokens — the single source of colors and fonts. Never hardcode these values elsewhere. */
+:root {
+  /* Surfaces */
+  --bg: #14161a;
+  --island: #0a0b0d;
+  --border: #2a2d33;
+
+  /* Text */
+  --text: #e6e8eb;
+  --text-2: #a7adb7;
+
+  /* Agent states */
+  --working: #67e8f9;
+  --needs-you: #f2a93b;
+  --done: #4cc38a;
+  --error: #ff6b6b;
+
+  /* Fonts (files bundled locally via Fontsource, see global.css) */
+  --font-ui: "Bricolage Grotesque", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
