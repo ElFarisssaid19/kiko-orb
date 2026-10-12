@@ -40,8 +40,9 @@ const layoutKeyOf = (s: KikoState) =>
     s.sessions.length,
     s.activeSessionId,
     s.activeSessionId ? (s.steps[s.activeSessionId]?.length ?? 0) : 0,
-    s.pendingPermission ? 1 : 0,
-    s.pendingQuestion?.question ?? "",
+    s.pending[0]?.request.id ?? "",
+    s.pending.length,
+    s.sessions.length === 0 ? (s.hooksStatus?.status ?? "") : "",
   ].join("|");
 
 /**

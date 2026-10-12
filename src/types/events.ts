@@ -1,53 +1,97 @@
-// Event model shared by the EventSource implementations and the store.
-// Shapes follow what Claude Code hooks can report; the real source arrives in a later step.
+// Events from Claude Code, as Kiko's hook server (src-tauri/src/hooks/) sends them.
+// Mirrors src-tauri/src/hooks/events.rs.
 
 export type AgentKind = "claude-code";
 
-/** One running agent session. */
-export interface Session {
+/** The session an event belongs to. `project` is the basename of `cwd`. */
+export interface SessionRef {
   id: string;
   project: string;
-  agent: AgentKind;
-  /** Human-readable current activity, e.g. "Editing app.tsx". */
-  currentStep: string;
-  /** Epoch ms. */
-  startedAt: number;
-  linesAdded: number;
-  linesRemoved: number;
+  cwd: string;
 }
 
 export type StepStatus = "running" | "done" | "error";
 
-/** A tool call made by an agent, e.g. { tool: "Edit", target: "src/App.tsx" }. */
+/** A tool call, e.g. { tool: "Edit", target: "src/App.tsx" }. `id` is Claude Code's tool_use_id. */
 export interface Step {
   id: string;
   tool: string;
+  /** What the tool acts on: a command, a file path, a pattern… Empty when there is nothing to show. */
   target: string;
   status: StepStatus;
 }
 
-/** The agent asks to run a command or to edit a file. */
-export type PermissionRequest =
-  | { sessionId: string; tool: string; command: string }
-  | { sessionId: string; tool: string; file: string };
+/** The agent waits for approval to run a command, edit a file or use another tool. */
+export interface PermissionRequest {
+  id: string;
+  sessionId: string;
+  tool: string;
+  kind: "command" | "file" | "other";
+  /** The command for Bash, the file for edits, otherwise a short summary of the tool input. */
+  subject: string;
+  /** Claude Code suggested a rule to remember the choice, so "Always" is offered. */
+  canAlwaysAllow: boolean;
+}
 
 export type PermissionDecision = "allow" | "always" | "deny";
 
-/** The agent asks the user to pick among options. */
-export interface QuestionRequest {
-  sessionId?: string;
+export interface QuestionOption {
+  label: string;
+  description: string;
+}
+
+export interface Question {
   question: string;
-  options: string[];
+  /** Short label, e.g. "Framework". */
+  header: string;
+  options: QuestionOption[];
   multiSelect: boolean;
 }
 
-/** Selected options, or "terminal" when the user chose to reply in the terminal instead. */
-export type QuestionAnswer = string[] | "terminal";
+/** An AskUserQuestion call: one to four questions. */
+export interface QuestionRequest {
+  id: string;
+  sessionId: string;
+  questions: Question[];
+}
+
+/** The user's answer to a held request. */
+export type RequestResponse =
+  | { kind: "permission"; decision: PermissionDecision }
+  /** Question text → chosen label, several labels joined with ", ". */
+  | { kind: "question"; answers: Record<string, string> }
+  /** Reply in the terminal: Claude Code shows its own prompt. */
+  | { kind: "release" };
+
+/** Why a held request went away. */
+export type ResolveReason = "answered" | "released" | "timeout" | "turn-ended" | "session-ended";
 
 export type AgentEvent =
-  | { type: "session-started"; session: Session }
-  | { type: "session-updated"; sessionId: string; changes: Partial<Omit<Session, "id">> }
-  | { type: "session-ended"; sessionId: string }
-  | { type: "step"; sessionId: string; step: Step }
-  | { type: "permission-requested"; request: PermissionRequest }
-  | { type: "question-asked"; request: QuestionRequest };
+  | { type: "session-started"; at: number; session: SessionRef; source: string }
+  | { type: "session-ended"; at: number; session: SessionRef; reason: string }
+  | { type: "prompt-submitted"; at: number; session: SessionRef }
+  | { type: "tool-started"; at: number; session: SessionRef; step: Step }
+  | {
+      type: "tool-finished";
+      at: number;
+      session: SessionRef;
+      step: Step;
+      linesAdded: number;
+      linesRemoved: number;
+    }
+  | { type: "permission-requested"; at: number; session: SessionRef; request: PermissionRequest }
+  | { type: "question-asked"; at: number; session: SessionRef; request: QuestionRequest }
+  | { type: "request-resolved"; at: number; requestId: string; reason: ResolveReason }
+  | { type: "notification"; at: number; session: SessionRef; notificationType: string; message: string }
+  | { type: "turn-stopped"; at: number; session: SessionRef }
+  | { type: "turn-failed"; at: number; session: SessionRef; error: string };
+
+/** One line of the hook server's debug log. */
+export interface HookLogEntry {
+  at: number;
+  /** Hook event name, e.g. "PreToolUse"; "Kiko" for Kiko's own answers; "Rejected" for refused requests. */
+  event: string;
+  sessionId: string;
+  project: string;
+  summary: string;
+}

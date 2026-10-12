@@ -24,12 +24,13 @@ Kiko is my BTS DWFS PFE (final-year project). It is a desktop companion that sho
 ```
 src/components/   React components (Kiko character, KikoBubble, Island + IslandContent, PermissionCard, QuestionCard)
 src/hooks/        React hooks (useKikoAnimation: Kiko's rAF loop; useIslandWindow: native window sizing; useNow; usePrefersReducedMotion)
-src/events/       EventSource interface + implementations (MockEventSource)
-src/store/        Zustand store (useKikoStore)
-src/types/        Shared TypeScript types (events, kiko)
-src/dev/          Dev-only fixtures and keyboard shortcuts, loaded by main.tsx when import.meta.env.DEV
-src/playground/   Dev-only pages, opened with a URL flag (`?playground`)
+src/events/       EventSource interface, ClaudeCodeSource (the only source), applyEvent (pure reducer), connect
+src/store/        Zustand store (useKikoStore) and its state model (state.ts)
+src/types/        Shared TypeScript types (events: mirrors src-tauri/src/hooks/events.rs; kiko)
+src/native.ts     Typed wrappers for Kiko's Tauri commands other than events (hooks installer, windows)
+src/playground/   Dev-only debug page: live hook log + store state (opened from Settings in dev builds)
 src/styles/       tokens.css (design tokens) + global.css (Tailwind entry, fonts, token → utility mapping, animate-* keyframes)
+src-tauri/src/hooks/      Claude Code integration: hook server (127.0.0.1), payload parsing, settings installer
 src-tauri/src/platform/   OS-specific Rust code
 docs/             PFE documentation
 ```
@@ -37,11 +38,22 @@ docs/             PFE documentation
 ## Commands
 
 - `npm run tauri dev`: run the app (Vite on port 1420 + Rust)
-- `npm run dev`: frontend only, in the browser. Playground (character + island, dev only): http://localhost:1420/?playground
-- Dev shortcuts in the app window (click the island first so it has focus): `p`/`q` permission/question, `Shift+P`/`Shift+Q` the same after 3s, `h`/`c`/`e` hidden/compact/expanded, `f` reload fixtures, `0` clear
+- `npm run dev`: frontend only, in the browser (no hook server, so no live data)
+- `npm test`: Vitest (applyEvent reducer) · `cd src-tauri && cargo test`: Rust tests (parsing, server, installer)
 - `npm run build`: type-check and build the frontend
 - `cd src-tauri && cargo clippy`: lint the Rust side
 - Rust lives in `~/.cargo/bin`. If `cargo` is not found in a non-login shell, run `source ~/.cargo/env` first.
+
+## Claude Code hooks
+
+- Based on the official hooks reference (https://code.claude.com/docs/en/hooks); check it before changing payloads or responses. Test payloads must follow its shapes.
+- Every Kiko hook is a shell-form `command` hook: `curl -sf --max-time <T> -H @"$HOME/.config/kiko/auth-header" … --data-binary @- http://127.0.0.1:<port>/kiko/hooks/<event> || true`. Kiko's answer comes back on stdout (JSON = decision, empty = no decision); `-f` + `|| true` make it exit 0 silently when Kiko is closed or refuses the request, so Claude Code never shows an error or blocks.
+- Timeouts: curl 115 s on PermissionRequest and on the AskUserQuestion PreToolUse hook (Kiko lets go at 110 s), 2 s on every other event; each hook's `timeout` (seconds) is above its curl limit (120 s / 3 s).
+- Kiko's server listens on 127.0.0.1 only (port in `~/.config/kiko/config.json`, default 47821) and rejects requests without the `X-Kiko-Token` header. The token lives in config.json and in `~/.config/kiko/auth-header` (both 0600, rewritten when the token changes); it never appears in settings.json.
+- SessionStart and UserPromptSubmit add a hook's plain-text stdout to Claude's context: Kiko answers them with an empty body.
+- PermissionRequest and AskUserQuestion (via PreToolUse) are held until the user answers, chooses "Reply in terminal", or 110 s pass; an empty answer lets Claude Code prompt in the terminal as usual.
+- Kiko's entries in settings.json are recognized by their endpoint (`http://127.0.0.1:<port>/kiko/hooks/…`), in a curl command or as an old http hook, so a reinstall migrates the http hooks of earlier versions. The installer checks curl (≥ 7.55, for `-H @file`), always backs up the file, shows a preview, refuses to write if the file changed since the preview, and records what it created in `~/.config/kiko/hooks-install.json` so uninstall restores the file exactly.
+- Never run the installer on the real `~/.claude/settings.json` while developing: start Kiko with `CLAUDE_CONFIG_DIR=<temp dir>` to point it at a temp settings file.
 
 ## Linux notes
 

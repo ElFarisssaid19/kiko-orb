@@ -1,8 +1,9 @@
+import { isTauri } from "@tauri-apps/api/core";
 import { useEffect, useState, type ReactNode } from "react";
-import { Island } from "../components/Island";
 import { Kiko } from "../components/Kiko";
-import { fixturePermission, fixtureQuestion, loadFixtures } from "../dev/fixtures";
-import { useKikoStore, type IslandState } from "../store/useKikoStore";
+import { connectedSource } from "../events/connect";
+import { useKikoStore } from "../store/useKikoStore";
+import type { HookLogEntry } from "../types/events";
 import type { Mood, Point } from "../types/kiko";
 
 const MOODS: { mood: Mood; label: string; dot: string }[] = [
@@ -13,8 +14,6 @@ const MOODS: { mood: Mood; label: string; dot: string }[] = [
   { mood: "done", label: "Done", dot: "bg-done" },
   { mood: "error", label: "Error", dot: "bg-error" },
 ];
-
-const ISLAND_STATES: IslandState[] = ["hidden", "compact", "expanded"];
 
 function Chip({ active, onClick, children }: { active?: boolean; onClick: () => void; children: ReactNode }) {
   return (
@@ -30,7 +29,7 @@ function Chip({ active, onClick, children }: { active?: boolean; onClick: () => 
   );
 }
 
-/** Dev page for the character and the island, opened with `?playground`. */
+/** Dev page: the character's moods, and the live hook traffic with the store it produces. */
 export default function Playground() {
   const [mood, setMood] = useState<Mood>("idle");
   const [activeSessions, setActiveSessions] = useState(2);
@@ -50,7 +49,7 @@ export default function Playground() {
   }, []);
 
   return (
-    <div className="flex h-full flex-wrap items-start justify-center gap-16 overflow-auto bg-bg p-8 text-text">
+    <div className="flex h-full flex-wrap items-start justify-center gap-10 overflow-auto bg-bg p-8 text-text">
       <section aria-label="Character" className="flex flex-col items-center gap-10 pt-16">
         {/* The mini Kiko sits on the left: the big one's bubble overflows to the right. */}
         <div className="flex items-end gap-16">
@@ -113,46 +112,67 @@ export default function Playground() {
         </div>
       </section>
 
-      <IslandSection />
+      <LiveSection />
     </div>
   );
 }
 
-/** The island as it renders in the Tauri window, driven by the store. */
-function IslandSection() {
-  const islandState = useKikoStore((s) => s.islandState);
-  const lastDecision = useKikoStore((s) => s.lastDecision);
-  const store = useKikoStore.getState;
+const time = (at: number) => new Date(at).toLocaleTimeString([], { hour12: false });
+
+/** The last 50 real hook events and the current store state, for debugging. */
+function LiveSection() {
+  const [log, setLog] = useState<HookLogEntry[]>([]);
+  const state = useKikoStore();
+  useEffect(() => connectedSource()?.subscribeLog(setLog), []);
+
+  const data = Object.fromEntries(Object.entries(state).filter(([, value]) => typeof value !== "function"));
+  const newestFirst = [...log].reverse();
 
   return (
-    <section aria-label="Island" className="flex flex-col items-center gap-4">
-      {/* Stand-in for the Tauri window at its largest. Hover the hidden pill to peek. */}
-      <div className="relative h-[600px] w-[468px] rounded-xl border border-dashed border-border">
-        <Island />
+    <section aria-label="Live hooks" className="flex w-[600px] max-w-full flex-col gap-4">
+      <h2 className="text-base font-semibold">Live hook events</h2>
+      {!isTauri() && (
+        <p className="text-sm text-text-2">
+          This tab has no hook server behind it. Open the playground from Kiko's settings window (dev build).
+        </p>
+      )}
+      <div className="max-h-80 overflow-auto rounded-xl border border-border bg-island">
+        <table className="w-full font-mono text-xs">
+          <thead className="sticky top-0 bg-island text-left text-text-2">
+            <tr>
+              <th className="px-3 py-2 font-normal">Time</th>
+              <th className="px-3 py-2 font-normal">Event</th>
+              <th className="px-3 py-2 font-normal">Session</th>
+              <th className="px-3 py-2 font-normal">Summary</th>
+            </tr>
+          </thead>
+          <tbody>
+            {newestFirst.map((entry, i) => (
+              <tr key={`${entry.at}-${i}`} className="border-t border-border align-top">
+                <td className="px-3 py-1.5 whitespace-nowrap text-text-2">{time(entry.at)}</td>
+                <td className={`px-3 py-1.5 whitespace-nowrap ${entry.event === "Rejected" ? "text-error" : "text-text"}`}>
+                  {entry.event}
+                </td>
+                <td className="px-3 py-1.5 whitespace-nowrap text-text-2" title={entry.sessionId}>
+                  {entry.project || "—"} {entry.sessionId.slice(0, 8)}
+                </td>
+                <td className="px-3 py-1.5 break-all text-text">{entry.summary}</td>
+              </tr>
+            ))}
+            {log.length === 0 && (
+              <tr>
+                <td colSpan={4} className="px-3 py-3 text-text-2">
+                  No hook event yet. Start Claude Code in a terminal once the hooks are installed.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
-
-      <div className="flex flex-wrap justify-center gap-2">
-        {ISLAND_STATES.map((state) => (
-          <Chip key={state} active={islandState === state} onClick={() => store().setIslandState(state)}>
-            {state}
-          </Chip>
-        ))}
-      </div>
-      <div className="flex flex-wrap justify-center gap-2">
-        <Chip onClick={() => store().requestPermission(fixturePermission)}>
-          <span className="size-2.5 rounded-full bg-needs-you" />
-          Permission
-        </Chip>
-        <Chip onClick={() => store().askQuestion(fixtureQuestion)}>
-          <span className="size-2.5 rounded-full bg-needs-you" />
-          Question
-        </Chip>
-        <Chip onClick={loadFixtures}>Load fixtures</Chip>
-        <Chip onClick={() => store().reset()}>Clear</Chip>
-      </div>
-      <p className="max-w-[468px] truncate font-mono text-xs text-text-2">
-        lastDecision: {lastDecision ? JSON.stringify(lastDecision.kind === "permission" ? lastDecision.decision : lastDecision.answer) : "none"}
-      </p>
+      <h2 className="text-base font-semibold">Store</h2>
+      <pre className="max-h-96 overflow-auto rounded-xl border border-border bg-island p-3 font-mono text-xs leading-5 text-text">
+        {JSON.stringify(data, null, 2)}
+      </pre>
     </section>
   );
 }

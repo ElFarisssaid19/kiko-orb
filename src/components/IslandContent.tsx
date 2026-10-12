@@ -1,7 +1,9 @@
 import { useMemo } from "react";
 import { useNow } from "../hooks/useNow";
-import { useKikoStore, type KikoState } from "../store/useKikoStore";
-import type { Session, Step, StepStatus } from "../types/events";
+import { openWindow } from "../native";
+import { useKikoStore, type HooksStatus, type KikoState, type Session } from "../store/useKikoStore";
+import type { Step, StepStatus } from "../types/events";
+import { BUTTON } from "./buttons";
 import { Kiko } from "./Kiko";
 import { PermissionCard } from "./PermissionCard";
 import { QuestionCard } from "./QuestionCard";
@@ -13,11 +15,15 @@ function agentsRunning(count: number): string {
   return `${count} ${count === 1 ? "agent" : "agents"} running`;
 }
 
+const hooksReady = (status: HooksStatus | null) => !status || (status.status === "installed" && status.upToDate);
+
 /** One-line status of the compact island. */
 function statusLine(s: KikoState): string {
-  if (s.pendingPermission) return "Waiting for your approval";
-  if (s.pendingQuestion) return "Claude Code has a question";
-  if (s.sessions.length === 1) return s.sessions[0].currentStep;
+  const head = s.pending[0];
+  if (head?.kind === "permission") return "Waiting for your approval";
+  if (head?.kind === "question") return "Claude Code has a question";
+  if (s.sessions.length === 0) return hooksReady(s.hooksStatus) ? "No agents running" : "Set up Claude Code hooks";
+  if (s.sessions.length === 1) return s.sessions[0].currentStep || s.sessions[0].project;
   return agentsRunning(s.sessions.length);
 }
 
@@ -62,41 +68,100 @@ export function CompactContent({ onExpand }: { onExpand: () => void }) {
   );
 }
 
-/** Expanded panel: Kiko with its bubble, sessions, last steps of the active session, pending card. */
+function SettingsButton() {
+  return (
+    <button
+      type="button"
+      onClick={() => void openWindow("settings")}
+      aria-label="Kiko settings"
+      title="Settings"
+      className="-mt-1 -mr-1 rounded-md p-1 text-text-2 transition-colors hover:text-text focus-visible:outline-2 focus-visible:outline-text"
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+      </svg>
+    </button>
+  );
+}
+
+/** With no session yet: whether Claude Code can reach Kiko, and the way to fix it. */
+function HooksNotice({ status }: { status: HooksStatus | null }) {
+  if (!status) return null;
+  const needsInstall = status.status === "not-installed" || !status.upToDate;
+  const message =
+    status.status === "port-busy" || status.status === "server-error"
+      ? status.error
+      : needsInstall && status.curlError
+        ? "Kiko's hooks need curl. See Settings."
+        : status.status === "not-installed"
+        ? "Claude Code hooks are not installed."
+        : !status.upToDate
+          ? "Kiko's hooks need an update."
+          : null;
+  if (!message) {
+    return <p className="font-mono text-xs text-text-2">Start Claude Code in a terminal: Kiko wakes up with it.</p>;
+  }
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-bg px-3 py-2">
+      <p className="text-sm text-text">{message}</p>
+      <button type="button" className={BUTTON.secondary} onClick={() => void openWindow("settings")}>
+        {status.status === "not-installed" ? "Set up" : "Settings"}
+      </button>
+    </div>
+  );
+}
+
+/** Expanded panel: Kiko with its bubble, sessions, last steps, then the oldest pending request. */
 export function ExpandedContent() {
   const mood = useKikoStore((s) => s.mood);
   const activeSessions = useKikoStore((s) => s.activeSessions);
   const sessions = useKikoStore((s) => s.sessions);
   const activeSessionId = useKikoStore((s) => s.activeSessionId);
   const steps = useKikoStore((s) => (s.activeSessionId ? s.steps[s.activeSessionId] : undefined));
-  const pendingPermission = useKikoStore((s) => s.pendingPermission);
-  const pendingQuestion = useKikoStore((s) => s.pendingQuestion);
+  const pending = useKikoStore((s) => s.pending);
+  const hooksStatus = useKikoStore((s) => s.hooksStatus);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
-  const permissionSession = sessions.find((s) => s.id === pendingPermission?.sessionId);
+  const head = pending[0];
+  const headSession = sessions.find((s) => s.id === head?.request.sessionId);
+  const waiting = pending.length - 1;
 
   return (
-    <div className="flex flex-col gap-3 p-4">
-      <div className="flex gap-3">
+    // Never taller than the screen: the content scrolls instead.
+    <div className="flex max-h-[680px] flex-col gap-3 overflow-y-auto p-4">
+      <div className="flex gap-6">
         <Kiko mood={mood} size={120} activeSessions={activeSessions} />
         <div className="flex min-w-0 flex-1 flex-col">
           {/* Leaves the top band free for Kiko's bubble */}
-          <p className="h-11 pt-0.5 text-right font-mono text-xs text-text-2">{agentsRunning(sessions.length)}</p>
+          <div className="flex h-11 items-start justify-end gap-2 pt-0.5">
+            <p className="font-mono text-xs text-text-2">{agentsRunning(sessions.length)}</p>
+            <SettingsButton />
+          </div>
           <SessionList sessions={sessions} activeSessionId={activeSessionId} />
         </div>
       </div>
 
+      {sessions.length === 0 && <HooksNotice status={hooksStatus} />}
+
       {activeSession && steps && steps.length > 0 && <StepList project={activeSession.project} steps={steps} />}
 
-      {pendingPermission ? (
+      {head?.kind === "permission" && (
         <PermissionCard
-          request={pendingPermission}
-          agent={permissionSession?.agent ?? "claude-code"}
-          project={permissionSession?.project}
+          key={head.request.id}
+          request={head.request}
+          agent={headSession?.agent ?? "claude-code"}
+          project={headSession?.project}
         />
-      ) : pendingQuestion ? (
-        <QuestionCard key={pendingQuestion.question} request={pendingQuestion} />
-      ) : null}
+      )}
+      {head?.kind === "question" && (
+        <QuestionCard key={head.request.id} request={head.request} project={headSession?.project} />
+      )}
+      {waiting > 0 && (
+        <p className="font-mono text-[11px] text-text-2">
+          {waiting} more {waiting === 1 ? "request" : "requests"} waiting
+        </p>
+      )}
     </div>
   );
 }
@@ -151,7 +216,7 @@ function StepList({ project, steps }: { project: string; steps: Step[] }) {
               <span role="img" aria-label={step.status} className={`w-3 shrink-0 text-center ${className}`}>
                 {glyph}
               </span>
-              <span className="w-10 shrink-0 text-text">{step.tool}</span>
+              <span className="w-[4.5rem] shrink-0 truncate text-text">{step.tool}</span>
               <span className="min-w-0 truncate text-text-2">{step.target}</span>
             </li>
           );
