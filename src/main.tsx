@@ -1,37 +1,41 @@
 import React, { Suspense, lazy } from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { ClaudeCodeSource } from "./events/ClaudeCodeSource";
+import { connectEventSource } from "./events/connect";
+import { currentPage, getHooksStatus, onHooksChanged } from "./native";
+import { useKikoStore } from "./store/useKikoStore";
 import "./styles/global.css";
 
-// Dev playground for the character and the island: open the app URL with `?playground`.
-// Behind import.meta.env.DEV so production builds drop it, with the fixtures it uses.
+const page = currentPage();
+
+const SettingsPanel = lazy(() => import("./components/SettingsPanel").then((m) => ({ default: m.SettingsPanel })));
+// Debug page for dev builds only: production builds drop it.
 const Playground =
-  import.meta.env.DEV && new URLSearchParams(window.location.search).has("playground")
-    ? lazy(() => import("./playground/Playground"))
-    : null;
+  import.meta.env.DEV && page === "playground" ? lazy(() => import("./playground/Playground")) : null;
 
-async function start() {
-  if (import.meta.env.DEV) {
-    // Fake sessions and keyboard shortcuts until real events arrive (see src/dev/).
-    const [{ loadFixtures }, { installDevShortcuts }] = await Promise.all([
-      import("./dev/fixtures"),
-      import("./dev/shortcuts"),
-    ]);
-    loadFixtures();
-    installDevShortcuts();
-  }
-
-  ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-    <React.StrictMode>
-      {Playground ? (
-        <Suspense fallback={null}>
-          <Playground />
-        </Suspense>
-      ) : (
-        <App />
-      )}
-    </React.StrictMode>,
-  );
+if (page !== "settings") {
+  connectEventSource(new ClaudeCodeSource());
+  const refreshHooksStatus = () =>
+    getHooksStatus()
+      .then(useKikoStore.getState().setHooksStatus)
+      .catch((error) => console.error("Kiko could not read the hooks status:", error));
+  void refreshHooksStatus();
+  void onHooksChanged(refreshHooksStatus);
 }
 
-void start();
+ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+  <React.StrictMode>
+    {page === "settings" ? (
+      <Suspense fallback={null}>
+        <SettingsPanel />
+      </Suspense>
+    ) : Playground ? (
+      <Suspense fallback={null}>
+        <Playground />
+      </Suspense>
+    ) : (
+      <App />
+    )}
+  </React.StrictMode>,
+);

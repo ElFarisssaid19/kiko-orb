@@ -1,6 +1,11 @@
-//! Linux: window placement and display-server workarounds.
+//! Linux: window placement, display-server workarounds and owner-only files.
 
-use std::env;
+use std::{
+    env, fs,
+    io::{self, Write},
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    path::Path,
+};
 
 use tauri::{
     LogicalSize, LogicalUnit, Monitor, PhysicalPosition, PhysicalRect, PixelUnit, WebviewWindow,
@@ -93,4 +98,35 @@ fn top_center(area: &PhysicalRect<i32, u32>, width: u32) -> PhysicalPosition<i32
         area.position.x + (area.size.width as i32 - width as i32) / 2,
         area.position.y,
     )
+}
+
+pub fn create_private_dir(dir: &Path) -> io::Result<()> {
+    fs::create_dir_all(dir)?;
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+}
+
+pub fn write_private_file(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    // `mode` only applies to a new file: tighten an existing one too, before writing the secret.
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    file.write_all(contents)
+}
+
+pub fn restrict_to_owner(path: &Path) -> io::Result<()> {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+}
+
+/// Ubuntu and Debian, the systems Kiko targets first.
+pub fn curl_install_command() -> &'static str {
+    "sudo apt install curl"
+}
+
+#[cfg(test)]
+pub fn is_owner_only(path: &Path) -> io::Result<bool> {
+    Ok(fs::metadata(path)?.permissions().mode() & 0o077 == 0)
 }
