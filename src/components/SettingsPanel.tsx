@@ -10,6 +10,7 @@ import {
 } from "../native";
 import type { HooksStatus } from "../store/state";
 import { BUTTON } from "./buttons";
+import { ChatSettings } from "./ChatSettings";
 
 function statusChip(status: HooksStatus): { label: string; dot: string } {
   switch (status.status) {
@@ -152,9 +153,11 @@ export function SettingsPanel() {
                     ? `adds the entries below${
                         preview.replacesHttp
                           ? ", replacing its earlier http hooks"
-                          : preview.replacesExisting
-                            ? ", replacing its earlier ones"
-                            : ""
+                          : preview.addsProcessId
+                            ? ", replacing its earlier ones, which don't send the Claude Code process id that chat needs"
+                            : preview.replacesExisting
+                              ? ", replacing its earlier ones"
+                              : ""
                       }.`
                     : "removes only the entries below."}{" "}
                   Your other settings and hooks stay as they are.
@@ -186,13 +189,16 @@ export function SettingsPanel() {
           )}
         </section>
 
+        <ChatSettings hooksStatus={status} />
+
         <section aria-labelledby="closed-title" className="flex flex-col gap-2">
           <h2 id="closed-title" className="text-base font-semibold">
             When Kiko is closed
           </h2>
           <p className="text-sm text-text-2">
             Claude Code keeps working normally: each hook command finds Kiko closed, gives up at once and stays silent.
-            Remove the hooks here if you stop using Kiko.
+            A chat session keeps running too: its channel waits quietly for Kiko, and Claude answers in the terminal
+            instead. Remove the hooks and chat here if you stop using Kiko.
           </p>
         </section>
 

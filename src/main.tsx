@@ -3,7 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { ClaudeCodeSource } from "./events/ClaudeCodeSource";
 import { connectEventSource } from "./events/connect";
-import { currentPage, getHooksStatus, onHooksChanged } from "./native";
+import { currentPage, getChatSetup, getHooksStatus, onChatChanged, onHooksChanged } from "./native";
 import { useKikoStore } from "./store/useKikoStore";
 import "./styles/global.css";
 
@@ -22,6 +22,13 @@ if (page !== "settings") {
       .catch((error) => console.error("Kiko could not read the hooks status:", error));
   void refreshHooksStatus();
   void onHooksChanged(refreshHooksStatus);
+  // The chat view shows the launch command, and whether chat is installed.
+  const refreshChatSetup = () =>
+    getChatSetup()
+      .then(useKikoStore.getState().setChatSetup)
+      .catch((error) => console.error("Kiko could not read the chat setup:", error));
+  void refreshChatSetup();
+  void onChatChanged(refreshChatSetup);
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

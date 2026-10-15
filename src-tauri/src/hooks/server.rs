@@ -1,6 +1,8 @@
-//! Local hook server: 127.0.0.1 only, one POST endpoint per hook event, every request carrying the
-//! secret token. Permissions and AskUserQuestion calls are held open until the user decides in the
-//! island, chooses to reply in the terminal, or the timeout passes.
+//! Local server: 127.0.0.1 only, every request carrying the secret token. One POST endpoint per hook
+//! event: permissions and AskUserQuestion calls are held open until the user decides in the island,
+//! chooses to reply in the terminal, or the timeout passes. And the chat channels' endpoints
+//! (`/kiko/channel/…`, see `crate::chat`): a channel's poll is held open until the user writes to its
+//! session or the poll times out.
 
 use std::{
     collections::VecDeque,
@@ -13,20 +15,26 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use serde::Deserialize;
-use serde_json::{Map, Value};
+use kiko_channel::protocol::{
+    CHANNEL_PATH_PREFIX, ChannelRef, ChatMessage, Endpoint, Register, Reply,
+};
+use serde::{Deserialize, de::DeserializeOwned};
+use serde_json::{Map, Value, json};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use super::{
     events::{AgentEvent, HookLogEntry, ResolveReason, SessionRef, StepStatus},
-    install::{HOOK_PATH_PREFIX, TOKEN_HEADER},
+    install::{HOOK_PATH_PREFIX, PID_HEADER, TOKEN_HEADER},
     parse::{self, ASK_USER_QUESTION, Hook, PermissionDecision},
 };
+use crate::chat::{ChatError, Effects, Limits, Registry};
 
 /// Lines kept for the playground's debug log.
 const LOG_SIZE: usize = 50;
 /// Write payloads carry whole files; anything bigger is refused.
 const MAX_BODY_BYTES: u64 = 16 * 1024 * 1024;
+/// A channel request carries at most one reply.
+const MAX_CHANNEL_BODY_BYTES: u64 = 1024 * 1024;
 
 /// What the server reports to the app.
 #[derive(Clone, Debug)]
@@ -73,7 +81,37 @@ struct Shared {
     held: Mutex<Vec<Held>>,
     log: Mutex<VecDeque<HookLogEntry>>,
     next_id: AtomicU64,
+    /// The chat channels; each held poll is a request kept open.
+    chat: Mutex<Registry<Request>>,
     emit: Box<dyn Fn(Emitted) + Send + Sync>,
+}
+
+/// What a request asks for: a hook event, or a channel endpoint.
+#[derive(Clone, Copy)]
+enum Route {
+    Hook(Hook),
+    Channel(Endpoint),
+}
+
+impl Route {
+    fn from_path(path: &str) -> Option<Route> {
+        if let Some(hook) = path.strip_prefix(HOOK_PATH_PREFIX) {
+            return Hook::from_path(hook).map(Route::Hook);
+        }
+        Endpoint::from_path(path.strip_prefix(CHANNEL_PATH_PREFIX)?).map(Route::Channel)
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Route::Hook(hook) => hook.event_name(),
+            Route::Channel(endpoint) => endpoint.path(),
+        }
+    }
+}
+
+/// The session a channel registered with, for the debug log.
+fn channel_session(register: &Register) -> SessionRef {
+    parse::session_ref(&json!({ "session_id": register.session_id, "cwd": register.cwd }))
 }
 
 #[derive(Clone)]
@@ -119,6 +157,17 @@ impl HookServer {
         decision_timeout: Duration,
         emit: impl Fn(Emitted) + Send + Sync + 'static,
     ) -> io::Result<Self> {
+        Self::start_with(port, token, decision_timeout, Limits::default(), emit)
+    }
+
+    /// `start`, with the chat channels' timeouts.
+    pub fn start_with(
+        port: u16,
+        token: String,
+        decision_timeout: Duration,
+        chat_limits: Limits,
+        emit: impl Fn(Emitted) + Send + Sync + 'static,
+    ) -> io::Result<Self> {
         let server = Server::http(("127.0.0.1", port)).map_err(|error| {
             match error.downcast::<io::Error>() {
                 Ok(error) => *error,
@@ -135,6 +184,7 @@ impl HookServer {
             held: Mutex::new(Vec::new()),
             log: Mutex::new(VecDeque::with_capacity(LOG_SIZE)),
             next_id: AtomicU64::new(1),
+            chat: Mutex::new(Registry::new(chat_limits)),
             emit: Box::new(emit),
         });
 
@@ -156,6 +206,8 @@ impl HookServer {
                         |held| held.since.elapsed() >= reaper.decision_timeout,
                         ResolveReason::Timeout,
                     );
+                    let effects = lock(&reaper.chat).tick(Instant::now(), now_ms());
+                    reaper.apply(effects);
                 }
             })?;
 
@@ -211,6 +263,27 @@ impl HookServer {
     pub fn log(&self) -> Vec<HookLogEntry> {
         lock(&self.shared.log).iter().cloned().collect()
     }
+
+    /// The user's chat message for a session: delivered to its channel's waiting poll, or kept for
+    /// the next one. `id` comes from the frontend, which shows the message at once.
+    pub fn send_chat(&self, session_id: &str, id: String, text: String) -> Result<(), String> {
+        let at = now_ms();
+        let effects = lock(&self.shared.chat)
+            .send(session_id, ChatMessage { id, text, at }, at)
+            .map_err(|error| error.to_string())?;
+        self.shared.apply(effects);
+        Ok(())
+    }
+
+    /// A `chat-linked` event per session a channel serves now, for a window that just opened.
+    pub fn chat_links(&self) -> Vec<AgentEvent> {
+        let at = now_ms();
+        lock(&self.shared.chat)
+            .linked_sessions()
+            .into_iter()
+            .map(|session_id| AgentEvent::ChatLinked { at, session_id })
+            .collect()
+    }
 }
 
 impl Shared {
@@ -246,12 +319,19 @@ impl Shared {
             })
     }
 
+    /// Answers the polls and emits the events of a chat change.
+    fn apply(&self, effects: Effects<Request>) {
+        for (request, inbox) in effects.answers {
+            reply_json(request, &serde_json::to_value(inbox).unwrap_or_default());
+        }
+        for event in effects.events {
+            self.emit(event);
+        }
+    }
+
     fn handle(&self, mut request: Request) {
         let path = request.url().split('?').next().unwrap_or("");
-        let Some(hook) = path
-            .strip_prefix(HOOK_PATH_PREFIX)
-            .and_then(Hook::from_path)
-        else {
+        let Some(route) = Route::from_path(path) else {
             return reply(request, 404);
         };
         if request.method() != &Method::Post {
@@ -271,28 +351,118 @@ impl Shared {
             self.log(
                 "Rejected",
                 &unknown,
-                format!("{} request without a valid token", hook.event_name()),
+                format!("{} request without a valid token", route.name()),
             );
             return reply(request, 401);
         }
+        let limit = match route {
+            Route::Hook(_) => MAX_BODY_BYTES,
+            Route::Channel(_) => MAX_CHANNEL_BODY_BYTES,
+        };
         let mut body = String::new();
         if request
             .as_reader()
-            .take(MAX_BODY_BYTES)
+            .take(limit)
             .read_to_string(&mut body)
             .is_err()
         {
             return reply(request, 400);
         }
-        match serde_json::from_str::<Value>(&body) {
-            Ok(input) => self.on_hook(hook, &input, request),
-            Err(_) => reply(request, 400),
+        match route {
+            Route::Hook(hook) => match serde_json::from_str::<Value>(&body) {
+                Ok(input) => {
+                    // `$PPID` of the hook's shell: the Claude Code process (0 or 1 would mean unknown).
+                    let pid = request
+                        .headers()
+                        .iter()
+                        .find(|header| header.field.equiv(PID_HEADER))
+                        .and_then(|header| header.value.as_str().trim().parse::<u32>().ok())
+                        .filter(|pid| *pid > 1);
+                    self.on_hook(hook, &input, pid, request)
+                }
+                Err(_) => reply(request, 400),
+            },
+            Route::Channel(endpoint) => self.on_channel(endpoint, &body, request),
         }
     }
 
-    fn on_hook(&self, hook: Hook, input: &Value, request: Request) {
+    fn on_channel(&self, endpoint: Endpoint, body: &str, request: Request) {
+        fn decode<T: DeserializeOwned>(body: &str) -> Option<T> {
+            serde_json::from_str(body).ok()
+        }
+        let (now, at) = (Instant::now(), now_ms());
+        match endpoint {
+            Endpoint::Register => {
+                let Some(register) = decode::<Register>(body) else {
+                    return reply(request, 400);
+                };
+                self.log(
+                    "Channel",
+                    &channel_session(&register),
+                    format!(
+                        "kiko-channel {} started by Claude Code process {}",
+                        register.version, register.parent_pid
+                    ),
+                );
+                let effects = lock(&self.chat).register(register, now, at);
+                reply_json(request, &json!({}));
+                self.apply(effects);
+            }
+            Endpoint::Poll => {
+                let Some(channel) = decode::<ChannelRef>(body) else {
+                    return reply(request, 400);
+                };
+                let polled = lock(&self.chat).poll(&channel.channel, request, now, at);
+                match polled {
+                    Ok(effects) => self.apply(effects),
+                    // Unknown channel: it registers again, then polls.
+                    Err(request) => reply(request, 404),
+                }
+            }
+            Endpoint::Reply => {
+                let Some(answer) = decode::<Reply>(body) else {
+                    return reply(request, 400);
+                };
+                let replied = lock(&self.chat).reply(&answer.channel, &answer.text, now, at);
+                match replied {
+                    Ok(event) => {
+                        if let AgentEvent::ChatReply { session_id, .. } = &event {
+                            let session = SessionRef {
+                                id: session_id.clone(),
+                                project: String::new(),
+                                cwd: String::new(),
+                            };
+                            self.log("Channel", &session, "reply from Claude".into());
+                        }
+                        reply_json(request, &json!({}));
+                        self.emit(event);
+                    }
+                    Err(ChatError::UnknownChannel) => reply(request, 404),
+                    Err(ChatError::NoSession) => reply(request, 409),
+                    Err(_) => reply(request, 400),
+                }
+            }
+            Endpoint::Unregister => {
+                let Some(channel) = decode::<ChannelRef>(body) else {
+                    return reply(request, 400);
+                };
+                let unregistered = lock(&self.chat).unregister(&channel.channel, at);
+                match unregistered {
+                    Ok(effects) => {
+                        reply_json(request, &json!({}));
+                        self.apply(effects);
+                    }
+                    Err(_) => reply(request, 404),
+                }
+            }
+        }
+    }
+
+    fn on_hook(&self, hook: Hook, input: &Value, pid: Option<u32>, request: Request) {
         let at = now_ms();
         let session = parse::session_ref(input);
+        // Which session this Claude Code process runs now: its chat channel follows.
+        let chat_events = lock(&self.chat).observe(pid, hook, &session.id, at);
         let tool = parse::tool_name(input);
         let text = |key: &str| {
             input
@@ -434,6 +604,9 @@ impl Shared {
                 reply(request, 200);
             }
         }
+        for event in chat_events {
+            self.emit(event);
+        }
     }
 
     fn next_id(&self) -> String {
@@ -523,6 +696,17 @@ mod tests {
 
     /// Minimal HTTP/1.1 client: (status, body).
     fn post(port: u16, path: &str, token: Option<&str>, body: &Value) -> (u16, String) {
+        post_with(port, path, token, "", body)
+    }
+
+    /// `post` with extra header lines, each ending in `\r\n`.
+    fn post_with(
+        port: u16,
+        path: &str,
+        token: Option<&str>,
+        headers: &str,
+        body: &Value,
+    ) -> (u16, String) {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
         let body = body.to_string();
         let token = token
@@ -530,7 +714,7 @@ mod tests {
             .unwrap_or_default();
         write!(
             stream,
-            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n{token}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n{token}{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         )
         .unwrap();
@@ -759,5 +943,298 @@ mod tests {
             body["hookSpecificOutput"]["updatedInput"]["questions"][0]["header"],
             "Framework"
         );
+    }
+
+    // Chat channels: kiko-channel's own client (its `Bridge`), run in this process against this
+    // server. `parent_pid` stands for the Claude Code process that started the channel; the hooks
+    // of that process send the same pid.
+
+    /// A hook event from Claude Code process `pid`, as the hook command posts it.
+    fn hook_from(server: &HookServer, pid: u32, hook: &str, body: Value) {
+        let header = format!("{PID_HEADER}: {pid}\r\n");
+        let path = format!("/kiko/hooks/{hook}");
+        assert_eq!(
+            post_with(server.port(), &path, Some(TOKEN), &header, &body).0,
+            200
+        );
+    }
+
+    /// SessionStart / SessionEnd inputs from the hooks reference.
+    fn session_start(session: &str, source: &str) -> Value {
+        json!({ "session_id": session, "cwd": "/home/user/my-project", "hook_event_name": "SessionStart", "source": source })
+    }
+
+    fn session_end(session: &str, reason: &str) -> Value {
+        json!({ "session_id": session, "cwd": "/home/user/my-project", "hook_event_name": "SessionEnd", "reason": reason })
+    }
+
+    struct TestChannel {
+        bridge: Arc<kiko_channel::bridge::Bridge>,
+        /// What the channel would push into its session.
+        delivered: mpsc::Receiver<Vec<ChatMessage>>,
+    }
+
+    impl TestChannel {
+        fn next_messages(&self) -> Vec<String> {
+            self.delivered
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the channel got no message")
+                .into_iter()
+                .map(|m| m.text)
+                .collect()
+        }
+    }
+
+    /// Starts a channel the way Claude Code process `parent_pid` would, with `CLAUDE_CODE_SESSION_ID`
+    /// = `env_session`.
+    fn start_channel(
+        server: &HookServer,
+        dir: &std::path::Path,
+        name: &str,
+        parent_pid: u32,
+        env_session: &str,
+    ) -> TestChannel {
+        let config = dir.join(format!("{name}-config.json"));
+        std::fs::write(
+            &config,
+            json!({ "port": server.port(), "token": TOKEN }).to_string(),
+        )
+        .unwrap();
+        let bridge = Arc::new(kiko_channel::bridge::Bridge::new(
+            Some(config),
+            Register {
+                channel: name.into(),
+                session_id: env_session.into(),
+                cwd: "/home/user/my-project".into(),
+                pid: parent_pid + 1,
+                parent_pid,
+                version: "test".into(),
+            },
+        ));
+        let (sender, delivered) = mpsc::channel();
+        let running = Arc::clone(&bridge);
+        thread::spawn(move || running.run(|messages| drop(sender.send(messages))));
+        TestChannel { bridge, delivered }
+    }
+
+    /// The next event matching `pick`, skipping the others.
+    fn wait_for<T>(
+        events: &mpsc::Receiver<AgentEvent>,
+        pick: impl Fn(AgentEvent) -> Option<T>,
+    ) -> T {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let event = events
+                .recv_timeout(left)
+                .expect("the expected event never came");
+            if let Some(found) = pick(event) {
+                return found;
+            }
+        }
+    }
+
+    fn linked(events: &mpsc::Receiver<AgentEvent>, session: &str) {
+        wait_for(events, |e| {
+            matches!(e, AgentEvent::ChatLinked { session_id, .. } if session_id == session)
+                .then_some(())
+        })
+    }
+
+    fn reply_of(events: &mpsc::Receiver<AgentEvent>) -> (String, String) {
+        wait_for(events, |e| match e {
+            AgentEvent::ChatReply {
+                session_id,
+                message,
+                ..
+            } => Some((session_id, message.text)),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn chat_follows_clear_in_the_same_claude_code_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, events) = start(Duration::from_secs(60));
+        hook_from(
+            &server,
+            4242,
+            "session-start",
+            session_start("abc123", "startup"),
+        );
+        let channel = start_channel(&server, dir.path(), "c1", 4242, "abc123");
+        linked(&events, "abc123");
+        assert_eq!(server.chat_links().len(), 1);
+
+        server
+            .send_chat("abc123", "m1".into(), "What does `npm test` say?".into())
+            .unwrap();
+        assert_eq!(channel.next_messages(), ["What does `npm test` say?"]);
+        let delivered = wait_for(&events, |e| match e {
+            AgentEvent::ChatDelivered { message_ids, .. } => Some(message_ids),
+            _ => None,
+        });
+        assert_eq!(delivered, ["m1"]);
+        channel.bridge.reply("All 12 tests pass.").unwrap();
+        assert_eq!(
+            reply_of(&events),
+            ("abc123".into(), "All 12 tests pass.".into())
+        );
+
+        // /clear: same process, new session id. The channel keeps running with its old
+        // CLAUDE_CODE_SESSION_ID, and still serves the session the process runs now.
+        hook_from(&server, 4242, "session-end", session_end("abc123", "clear"));
+        wait_for(&events, |e| {
+            matches!(e, AgentEvent::ChatUnlinked { session_id, .. } if session_id == "abc123")
+                .then_some(())
+        });
+        hook_from(
+            &server,
+            4242,
+            "session-start",
+            session_start("def456", "clear"),
+        );
+        linked(&events, "def456");
+        assert!(
+            server
+                .send_chat("abc123", "m2".into(), "hello?".into())
+                .is_err()
+        );
+        server
+            .send_chat("def456", "m3".into(), "Again, after /clear".into())
+            .unwrap();
+        assert_eq!(channel.next_messages(), ["Again, after /clear"]);
+        channel.bridge.reply("Fresh context, still here.").unwrap();
+        assert_eq!(
+            reply_of(&events),
+            ("def456".into(), "Fresh context, still here.".into())
+        );
+
+        // The session ends for good: Claude Code closes the channel.
+        hook_from(
+            &server,
+            4242,
+            "session-end",
+            session_end("def456", "prompt_input_exit"),
+        );
+        channel.bridge.unregister();
+        assert!(server.chat_links().is_empty());
+    }
+
+    #[test]
+    fn two_sessions_in_two_processes_chat_separately() {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, events) = start(Duration::from_secs(60));
+        hook_from(
+            &server,
+            1001,
+            "session-start",
+            session_start("one", "startup"),
+        );
+        hook_from(
+            &server,
+            2002,
+            "session-start",
+            session_start("two", "startup"),
+        );
+        let first = start_channel(&server, dir.path(), "c1", 1001, "one");
+        linked(&events, "one");
+        let second = start_channel(&server, dir.path(), "c2", 2002, "two");
+        linked(&events, "two");
+
+        server
+            .send_chat("two", "m1".into(), "for two".into())
+            .unwrap();
+        assert_eq!(second.next_messages(), ["for two"]);
+        server
+            .send_chat("one", "m2".into(), "for one".into())
+            .unwrap();
+        assert_eq!(first.next_messages(), ["for one"]);
+        assert!(first.delivered.try_recv().is_err() && second.delivered.try_recv().is_err());
+
+        second.bridge.reply("two here").unwrap();
+        assert_eq!(reply_of(&events), ("two".into(), "two here".into()));
+        first.bridge.reply("one here").unwrap();
+        assert_eq!(reply_of(&events), ("one".into(), "one here".into()));
+    }
+
+    #[test]
+    fn channel_requests_need_the_token_and_a_known_channel() {
+        let (server, _events) = start(Duration::from_secs(60));
+        let body = json!({ "channel": "nope" });
+        assert_eq!(
+            post(server.port(), "/kiko/channel/poll", None, &body).0,
+            401
+        );
+        assert_eq!(
+            post(server.port(), "/kiko/channel/poll", Some("wrong"), &body).0,
+            401
+        );
+        assert_eq!(
+            post(server.port(), "/kiko/channel/poll", Some(TOKEN), &body).0,
+            404
+        );
+        assert_eq!(
+            post(server.port(), "/kiko/channel/nope", Some(TOKEN), &body).0,
+            404
+        );
+        let reply = json!({ "channel": "nope", "text": "hi" });
+        assert_eq!(
+            post(server.port(), "/kiko/channel/reply", Some(TOKEN), &reply).0,
+            404
+        );
+        assert_eq!(
+            post(server.port(), "/kiko/channel/register", Some(TOKEN), &body).0,
+            400
+        );
+        assert!(
+            server
+                .send_chat("abc123", "m1".into(), "hi".into())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_held_poll_is_answered_empty_when_it_times_out() {
+        let (sender, events) = mpsc::channel();
+        let sender = Mutex::new(sender);
+        let limits = Limits {
+            poll_timeout: Duration::from_millis(300),
+            stale_after: Duration::from_millis(600),
+        };
+        let server =
+            HookServer::start_with(0, TOKEN.into(), Duration::from_secs(60), limits, move |e| {
+                if let Emitted::Event(event) = e {
+                    let _ = lock(&sender).send(event);
+                }
+            })
+            .unwrap();
+        let register = json!({ "channel": "c1", "sessionId": "abc123", "cwd": "/x", "pid": 2, "parentPid": 4242, "version": "test" });
+        assert_eq!(
+            post(
+                server.port(),
+                "/kiko/channel/register",
+                Some(TOKEN),
+                &register
+            )
+            .0,
+            200
+        );
+        let started = Instant::now();
+        let (status, body) = post(
+            server.port(),
+            "/kiko/channel/poll",
+            Some(TOKEN),
+            &json!({ "channel": "c1" }),
+        );
+        assert_eq!((status, body.as_str()), (200, r#"{"messages":[]}"#));
+        assert!(
+            started.elapsed() >= Duration::from_millis(250),
+            "the poll was held"
+        );
+        // No new poll: the channel is gone, and its session loses the chat.
+        wait_for(&events, |e| {
+            matches!(e, AgentEvent::ChatUnlinked { .. }).then_some(())
+        });
     }
 }

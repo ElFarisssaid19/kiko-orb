@@ -4,8 +4,15 @@ version = "0.1.0"
 description = "Kiko — desktop companion for AI coding agents"
 authors = ["you"]
 edition = "2024"
+default-run = "kiko-orb"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+# kiko-channel is the small program Claude Code starts in each session (Kiko's chat channel).
+# Its own crate keeps it free of Tauri/GTK; `cargo build` and `cargo test` here cover both.
+[workspace]
+members = ["kiko-channel"]
+default-members = [".", "kiko-channel"]
 
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
@@ -23,6 +30,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 tiny_http = "0.12"
 getrandom = "0.4"
+# The wire protocol shared with the channel program.
+kiko-channel = { path = "kiko-channel" }
 
 [dev-dependencies]
 tempfile = "3"

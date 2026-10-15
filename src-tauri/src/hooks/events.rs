@@ -1,5 +1,6 @@
 //! Events sent to the frontend. Mirrors `AgentEvent` in `src/types/events.ts` (camelCase JSON).
 
+use kiko_channel::protocol::ChatMessage;
 use serde::Serialize;
 
 /// The session an event belongs to. Every session-scoped event carries it, so the frontend can
@@ -155,6 +156,28 @@ pub enum AgentEvent {
         at: u64,
         session: SessionRef,
         error: String,
+    },
+    /// A chat channel now serves this session: the user can write to it from Kiko.
+    ChatLinked {
+        at: u64,
+        session_id: String,
+    },
+    /// The session has no channel any more (it ended, was cleared, or its Claude Code exited).
+    ChatUnlinked {
+        at: u64,
+        session_id: String,
+    },
+    /// The session's channel picked up these messages and handed them to Claude Code.
+    ChatDelivered {
+        at: u64,
+        session_id: String,
+        message_ids: Vec<String>,
+    },
+    /// Claude answered with the channel's reply tool.
+    ChatReply {
+        at: u64,
+        session_id: String,
+        message: ChatMessage,
     },
 }
 

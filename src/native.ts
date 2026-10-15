@@ -2,7 +2,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { HooksStatus } from "./store/state";
+import type { ChatSetup, HooksStatus } from "./store/state";
 
 export type HooksAction = "install" | "uninstall";
 
@@ -16,6 +16,8 @@ export interface HooksPreview {
   replacesExisting: boolean;
   /** The earlier install used http hooks, from before Kiko switched to curl commands. */
   replacesHttp: boolean;
+  /** The earlier install's commands don't send the Claude Code process id, which chat needs. */
+  addsProcessId: boolean;
   nothingToDo: boolean;
   fingerprint: string;
 }
@@ -51,6 +53,40 @@ export function previewHooksChange(action: HooksAction): Promise<HooksPreview> {
 
 export function applyHooksChange(action: HooksAction, fingerprint: string): Promise<HooksApplied> {
   return invoke<HooksApplied>("apply_hooks_change", { action, fingerprint });
+}
+
+/** One thing a chat install or removal does, shown before it happens. */
+export interface ChatStep {
+  kind: "create-dir" | "copy" | "write" | "remove" | "remove-dir";
+  /** With `~` for the home directory. */
+  path: string;
+  detail: string;
+  /** The text written, for "write". */
+  content: string | null;
+}
+
+export interface ChatPreview {
+  action: HooksAction;
+  steps: ChatStep[];
+  nothingToDo: boolean;
+  fingerprint: string;
+}
+
+export function getChatSetup(): Promise<ChatSetup | null> {
+  return isTauri() ? invoke<ChatSetup>("chat_status") : Promise.resolve(null);
+}
+
+/** Calls `onChange` after Kiko's chat is installed or removed, from any window. */
+export async function onChatChanged(onChange: () => void): Promise<() => void> {
+  return isTauri() ? listen("kiko://chat-changed", onChange) : () => {};
+}
+
+export function previewChatChange(action: HooksAction): Promise<ChatPreview> {
+  return invoke<ChatPreview>("preview_chat_change", { action });
+}
+
+export function applyChatChange(action: HooksAction, fingerprint: string): Promise<void> {
+  return invoke("apply_chat_change", { action, fingerprint });
 }
 
 export function openWindow(kind: "settings" | "playground"): Promise<void> {

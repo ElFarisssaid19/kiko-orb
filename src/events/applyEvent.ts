@@ -1,13 +1,31 @@
 import { MAX_STEPS, type KikoData, type PendingRequest, type Session, type SessionStatus } from "../store/state";
-import type { AgentEvent, RequestResponse, SessionRef, Step } from "../types/events";
+import type { AgentEvent, ChatMessage, RequestResponse, SessionRef, Step } from "../types/events";
 import type { Mood } from "../types/kiko";
+import {
+  chatDelivered,
+  chatFailed,
+  chatLinked,
+  chatOpened,
+  chatReply,
+  chatSending,
+  chatUnlinked,
+  withoutChat,
+} from "./chat";
 
 /** Events Kiko produces itself, next to the agent's. */
 export type LocalEvent =
   /** 4 s after a turn ended: "done" settles to idle. */
   | { type: "done-expired"; sessionId: string }
   /** The user answered a pending request in the island. */
-  | { type: "answered"; requestId: string; response: RequestResponse };
+  | { type: "answered"; requestId: string; response: RequestResponse }
+  /** The expanded island shows this session's chat (its replies count as seen). */
+  | { type: "chat-opened"; sessionId: string }
+  /** Back to the overview. */
+  | { type: "chat-closed" }
+  /** The user sent a message: shown at once, on its way to the session's channel. */
+  | { type: "chat-sending"; sessionId: string; message: ChatMessage }
+  /** Kiko couldn't hand the message to the session's channel. */
+  | { type: "chat-failed"; sessionId: string; messageId: string; error: string };
 
 export type KikoEvent = AgentEvent | LocalEvent;
 
@@ -129,7 +147,7 @@ function reduce(state: KikoData, event: KikoEvent): KikoData {
       const id = event.session.id;
       const { [id]: _gone, ...steps } = state.steps;
       return {
-        ...withoutPending(state, (p) => p.request.sessionId !== id),
+        ...withoutChat(withoutPending(state, (p) => p.request.sessionId !== id), id),
         sessions: state.sessions.filter((s) => s.id !== id),
         steps,
       };
@@ -214,6 +232,23 @@ function reduce(state: KikoData, event: KikoEvent): KikoData {
         ...withoutPending(state, (p) => p.request.id !== event.requestId),
         lastDecision: { requestId: event.requestId, response: event.response },
       };
+
+    case "chat-linked":
+      return chatLinked(state, event.sessionId);
+    case "chat-unlinked":
+      return chatUnlinked(state, event.sessionId);
+    case "chat-delivered":
+      return chatDelivered(state, event.sessionId, event.messageIds);
+    case "chat-reply":
+      return chatReply(state, event.sessionId, event.message);
+    case "chat-opened":
+      return chatOpened(state, event.sessionId);
+    case "chat-closed":
+      return { ...state, chatSessionId: null };
+    case "chat-sending":
+      return chatSending(state, event.sessionId, event.message);
+    case "chat-failed":
+      return chatFailed(state, event.sessionId, event.messageId, event.error);
   }
 }
 
@@ -229,10 +264,12 @@ function settle(previous: KikoData, next: KikoData): KikoData {
 
   const head = next.pending[0]?.request.sessionId;
   const keep = next.sessions.some((s) => s.id === next.activeSessionId) ? next.activeSessionId : null;
+  const chatSessionId = next.sessions.some((s) => s.id === next.chatSessionId) ? next.chatSessionId : null;
 
   return {
     ...next,
     islandState,
+    chatSessionId,
     mood: moodOf(next.sessions, next.pending),
     activeSessions: next.sessions.filter((s) => s.status === "working").length,
     activeSessionId: head ?? keep ?? next.sessions[0]?.id ?? null,

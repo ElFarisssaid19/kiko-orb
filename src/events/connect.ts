@@ -1,4 +1,4 @@
-import { setResponder, useKikoStore } from "../store/useKikoStore";
+import { setChatSender, setResponder, useKikoStore } from "../store/useKikoStore";
 import type { EventSource } from "./EventSource";
 
 /** How long Kiko shows "done" after a turn ends; matches Kiko's own done → idle. */
@@ -11,12 +11,13 @@ export function connectedSource(): EventSource | null {
   return connected;
 }
 
-/** Feeds a source's events into the store, and the user's answers back to the source. */
+/** Feeds a source's events into the store, and the user's answers and chat messages back to the source. */
 export function connectEventSource(source: EventSource): () => void {
   const doneTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const dispatch = useKikoStore.getState().dispatch;
 
   setResponder((requestId, response) => source.respond(requestId, response));
+  setChatSender((sessionId, message) => source.sendChat(sessionId, message));
   const unsubscribe = source.subscribe((event) => {
     dispatch(event);
     if (event.type === "turn-stopped") {
@@ -39,6 +40,7 @@ export function connectEventSource(source: EventSource): () => void {
     source.stop();
     doneTimers.forEach(clearTimeout);
     setResponder(null);
+    setChatSender(null);
     connected = null;
   };
 }

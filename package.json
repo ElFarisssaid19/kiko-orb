@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:app": "cargo build --manifest-path src-tauri/Cargo.toml -p kiko-channel && vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",

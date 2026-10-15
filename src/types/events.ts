@@ -63,6 +63,14 @@ export type RequestResponse =
   /** Reply in the terminal: Claude Code shows its own prompt. */
   | { kind: "release" };
 
+/** A chat message: one the user wrote in Kiko, or Claude's reply. Mirrors `ChatMessage` in kiko-channel's protocol.rs. */
+export interface ChatMessage {
+  id: string;
+  text: string;
+  /** Epoch ms. */
+  at: number;
+}
+
 /** Why a held request went away. */
 export type ResolveReason = "answered" | "released" | "timeout" | "turn-ended" | "session-ended";
 
@@ -84,7 +92,15 @@ export type AgentEvent =
   | { type: "request-resolved"; at: number; requestId: string; reason: ResolveReason }
   | { type: "notification"; at: number; session: SessionRef; notificationType: string; message: string }
   | { type: "turn-stopped"; at: number; session: SessionRef }
-  | { type: "turn-failed"; at: number; session: SessionRef; error: string };
+  | { type: "turn-failed"; at: number; session: SessionRef; error: string }
+  /** A chat channel now serves this session: the user can write to it from Kiko. */
+  | { type: "chat-linked"; at: number; sessionId: string }
+  /** The session has no channel any more (it ended, was cleared, or its Claude Code exited). */
+  | { type: "chat-unlinked"; at: number; sessionId: string }
+  /** The channel picked up these messages and handed them to Claude Code. */
+  | { type: "chat-delivered"; at: number; sessionId: string; messageIds: string[] }
+  /** Claude answered with the channel's reply tool. */
+  | { type: "chat-reply"; at: number; sessionId: string; message: ChatMessage };
 
 /** One line of the hook server's debug log. */
 export interface HookLogEntry {
