@@ -19,7 +19,8 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 pub enum KikoError {
     /// Kiko is closed, or didn't answer in time.
     Unreachable(io::Error),
-    /// Kiko answered with an HTTP error, e.g. 401 (wrong token) or 404 (unknown channel).
+    /// Kiko answered with an HTTP error, e.g. 401 (wrong token), 404 (unknown channel) or 409 (no
+    /// session for this channel right now).
     Status(u16),
 }
 
@@ -28,6 +29,7 @@ impl fmt::Display for KikoError {
         match self {
             KikoError::Unreachable(_) => write!(f, "Kiko is not running"),
             KikoError::Status(401) => write!(f, "Kiko refused the channel's token"),
+            KikoError::Status(409) => write!(f, "Kiko doesn't know which session this channel belongs to yet"),
             KikoError::Status(status) => write!(f, "Kiko answered HTTP {status}"),
         }
     }

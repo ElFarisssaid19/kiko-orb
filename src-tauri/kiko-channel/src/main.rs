@@ -15,6 +15,7 @@ use std::{
 use kiko_channel::{
     bridge::Bridge,
     mcp::{McpServer, channel_notification},
+    platform,
     protocol::{ChatMessage, Register},
 };
 use serde_json::Value;
@@ -105,6 +106,7 @@ fn main() {
             session_id: env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default(),
             cwd,
             pid: process::id(),
+            parent_pid: platform::parent_pid(),
             version: env!("CARGO_PKG_VERSION").into(),
         },
     ));

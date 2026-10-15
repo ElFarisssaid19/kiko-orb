@@ -15,6 +15,7 @@ Built with **Tauri 2, Rust, React, TypeScript and Motion**. Linux first (Ubuntu 
 - **Live sessions:** every running Claude Code session with its project, current step, elapsed time and lines added / removed.
 - **Permission requests:** Allow, Deny or Always from the island, or hand the request back to the terminal.
 - **Questions:** answer Claude's multiple-choice questions directly from the island.
+- **Chat:** write to a running session from the island and read Claude's replies there (Claude Code channels, research preview).
 - **Kiko, the orb:** six moods with LED eyes. Its ring spins faster the more agents are working.
 - **Three island states:** hidden, compact and expanded, with smooth animations and reduced-motion support.
 - **Safe setup:** hooks are installed from the Settings window, with a preview of the exact change, a backup, and a clean uninstall.
@@ -87,6 +88,17 @@ The first build takes a few minutes.
 
 To remove them: **Settings → Remove hooks…**
 
+### Chat with a session (optional)
+
+Needs Claude Code 2.1.80 or newer, signed in with a claude.ai account.
+
+1. **Settings → Chat → Install chat…**, check the preview, then **Install**.
+2. Start Claude Code with the launch command shown there (or add the suggested `kiko-claude` alias to your shell):
+   `claude --mcp-config ~/.config/kiko/mcp.json --dangerously-load-development-channels server:kiko`
+3. Accept the development-channels warning. In the island, select the session and click **Chat**.
+
+Sessions started with a plain `claude` never load Kiko's chat.
+
 ## 🔒 Privacy
 
 - Kiko runs only on your computer and sends nothing outside it.
@@ -98,7 +110,7 @@ To remove them: **Settings → Remove hooks…**
 - [x] Floating island with permission and question cards
 - [x] Real Claude Code integration
 - [x] Settings with safe hooks install and uninstall
-- [ ] Chat with a running session
+- [x] Chat with a running session
 - [ ] Global shortcuts and more settings
 - [ ] Linux installer (`.deb` or AppImage)
 - [ ] Windows and macOS

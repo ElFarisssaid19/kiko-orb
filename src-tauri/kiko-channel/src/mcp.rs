@@ -251,7 +251,7 @@ mod tests {
         });
         let call = r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"reply","arguments":{"text":"All tests pass."}}}"#;
         assert_eq!(ok.handle_line(call).unwrap()["result"]["isError"], false);
-        drop(ok);
+        // `ok` isn't used again, so its borrow of `sent` ends here.
         assert_eq!(sent, ["All tests pass."]);
 
         let mut down = McpServer::new(|_: &str| Err("Kiko is not running".to_string()));

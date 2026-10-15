@@ -46,6 +46,48 @@ export interface HooksStatus {
   curlError: string | null;
 }
 
+/** sending: Kiko has it, the session not yet · delivered: its channel handed it to Claude Code · failed: it never got there. */
+export type ChatDelivery = "sending" | "delivered" | "failed";
+
+/** One line of a session's chat: what the user wrote, or Claude's reply. */
+export interface ChatEntry {
+  id: string;
+  from: "you" | "claude";
+  text: string;
+  /** Epoch ms. */
+  at: number;
+  /** The user's messages only. */
+  delivery?: ChatDelivery;
+  /** Why a message failed. */
+  error?: string;
+}
+
+/** Chat setup as reported by the app, see `chat_status` in src-tauri/src/lib.rs. */
+export interface ChatSetup {
+  status: "installed" | "not-installed" | "claude-missing";
+  /** kiko-channel and Kiko's mcp.json are in place. */
+  installed: boolean;
+  /** …and the same as this Kiko would install. */
+  upToDate: boolean;
+  /** Something of Kiko's chat is on disk: it can be removed. */
+  removable: boolean;
+  claudePath: string | null;
+  /** e.g. "2.1.296"; null if `claude --version` didn't answer. */
+  claudeVersion: string | null;
+  /** Older than the first Claude Code with channels (minClaudeVersion). */
+  claudeTooOld: boolean;
+  minClaudeVersion: string;
+  /** The command that starts a chat session. */
+  launchCommand: string;
+  /** `alias kiko-claude='…'`, for the user's shell configuration. */
+  alias: string;
+  binaryPath: string;
+  mcpConfigPath: string;
+  /** kiko-channel isn't built next to Kiko, and how to build it. */
+  sourceError: string | null;
+  error: string | null;
+}
+
 /** Steps kept per session. */
 export const MAX_STEPS = 5;
 
@@ -63,6 +105,15 @@ export interface KikoData {
   pending: PendingRequest[];
   lastDecision: Decision | null;
   hooksStatus: HooksStatus | null;
+  /** Chat history per session id, oldest first. In memory only: dropped when the session ends. */
+  chats: Record<string, ChatEntry[]>;
+  /** Sessions a chat channel serves now. */
+  chatLinks: Record<string, true>;
+  /** The session whose chat the expanded island shows; null for the overview. */
+  chatSessionId: string | null;
+  /** Claude's replies not seen yet, per session id. */
+  unread: Record<string, number>;
+  chatSetup: ChatSetup | null;
 }
 
 export const initialData: KikoData = {
@@ -75,4 +126,9 @@ export const initialData: KikoData = {
   pending: [],
   lastDecision: null,
   hooksStatus: null,
+  chats: {},
+  chatLinks: {},
+  chatSessionId: null,
+  unread: {},
+  chatSetup: null,
 };

@@ -1,7 +1,8 @@
 //! Adds Kiko's Claude Code hooks to the user's settings and removes them again, leaving every other
 //! setting and hook as it was. Each hook is a shell command that pipes the event to Kiko with curl and
 //! stays silent when Kiko is closed. Kiko's entries are recognized by their endpoint,
-//! http://127.0.0.1:<port>/kiko/hooks/…, which also finds the http hooks of earlier versions.
+//! http://127.0.0.1:<port>/kiko/hooks/…, which also finds the hooks of earlier versions (http hooks,
+//! then commands without the process id) so a reinstall replaces them.
 
 use std::{
     collections::hash_map::DefaultHasher,
@@ -21,6 +22,9 @@ use crate::platform;
 
 pub const HOOK_PATH_PREFIX: &str = "/kiko/hooks/";
 pub const TOKEN_HEADER: &str = "X-Kiko-Token";
+/// The Claude Code process that ran the hook. Shell-form hooks run as `sh -c` children of Claude Code,
+/// so `$PPID` is that process: the same one that starts Kiko's chat channel.
+pub const PID_HEADER: &str = "X-Kiko-Claude-Pid";
 
 /// curl's limit (seconds) on an event Kiko answers at once. A closed Kiko refuses the connection at once.
 const QUICK_CURL_SECS: u64 = 2;
@@ -59,13 +63,14 @@ pub fn shell_path(path: &Path, home: &Path) -> String {
     }
 }
 
-/// The shell command one hook runs: the event JSON goes from stdin to Kiko, Kiko's answer comes back
-/// on stdout. `-f` prints nothing on an HTTP error, and `|| true` turns every failure (Kiko closed,
-/// timeout, refused token) into a silent exit 0: Claude Code carries on as if there were no hook.
+/// The shell command one hook runs: the event JSON goes from stdin to Kiko, with the Claude Code
+/// process id in a header, and Kiko's answer comes back on stdout. `-f` prints nothing on an HTTP
+/// error, and `|| true` turns every failure (Kiko closed, timeout, refused token) into a silent exit 0:
+/// Claude Code carries on as if there were no hook.
 pub fn hook_command(port: u16, auth_header: &str, hook: Hook, max_time: u64) -> String {
     format!(
         "curl -sf --max-time {max_time} -H @{auth_header} -H \"Content-Type: application/json\" \
-         --data-binary @- http://127.0.0.1:{port}{HOOK_PATH_PREFIX}{} || true",
+         -H \"{PID_HEADER}: $PPID\" --data-binary @- http://127.0.0.1:{port}{HOOK_PATH_PREFIX}{} || true",
         hook.path()
     )
 }
@@ -393,6 +398,8 @@ pub struct Preview {
     pub replaces_existing: bool,
     /// The earlier install used http hooks (before Kiko switched to curl commands).
     pub replaces_http: bool,
+    /// The earlier install's commands don't send the Claude Code process id, which chat needs.
+    pub adds_process_id: bool,
     pub nothing_to_do: bool,
     /// Identifies the file's content at preview time; `apply` refuses to write if it changed.
     pub fingerprint: String,
@@ -471,14 +478,23 @@ impl Installer {
         }
         let settings = read_settings(&self.settings_path)?;
         let existing = kiko_entries(&settings.json);
-        let replaces_http = action == Action::Install
-            && existing
-                .values()
-                .filter_map(Value::as_array)
-                .flatten()
-                .filter_map(|group| group.get("hooks")?.as_array())
-                .flatten()
-                .any(is_http);
+        let existing_handlers: Vec<&Value> = existing
+            .values()
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(|group| group.get("hooks")?.as_array())
+            .flatten()
+            .collect();
+        let replaces_http =
+            action == Action::Install && existing_handlers.iter().any(|handler| is_http(handler));
+        let adds_process_id = action == Action::Install
+            && existing_handlers.iter().any(|handler| {
+                !is_http(handler)
+                    && !handler
+                        .get("command")
+                        .and_then(Value::as_str)
+                        .is_some_and(|command| command.contains(PID_HEADER))
+            });
         let entries = match action {
             Action::Install => kiko_hooks(self.port, &self.auth_header),
             Action::Uninstall => existing.clone(),
@@ -490,6 +506,7 @@ impl Installer {
             entries: serde_json::to_string_pretty(&json!({ "hooks": entries })).unwrap_or_default(),
             replaces_existing: action == Action::Install && !existing.is_empty(),
             replaces_http,
+            adds_process_id,
             nothing_to_do: self.target(&settings.json, action).0 == settings.json,
             fingerprint: fingerprint(settings.text.as_deref()),
         })
@@ -794,7 +811,7 @@ mod tests {
             hooks["PermissionRequest"][0]["hooks"][0],
             json!({
                 "type": "command",
-                "command": "curl -sf --max-time 115 -H @\"$HOME/.config/kiko/auth-header\" -H \"Content-Type: application/json\" --data-binary @- http://127.0.0.1:47821/kiko/hooks/permission-request || true",
+                "command": "curl -sf --max-time 115 -H @\"$HOME/.config/kiko/auth-header\" -H \"Content-Type: application/json\" -H \"X-Kiko-Claude-Pid: $PPID\" --data-binary @- http://127.0.0.1:47821/kiko/hooks/permission-request || true",
                 "timeout": 120,
                 "statusMessage": "Waiting for your decision in Kiko"
             })
@@ -811,7 +828,7 @@ mod tests {
             hooks["SessionStart"][0]["hooks"][0],
             json!({
                 "type": "command",
-                "command": "curl -sf --max-time 2 -H @\"$HOME/.config/kiko/auth-header\" -H \"Content-Type: application/json\" --data-binary @- http://127.0.0.1:47821/kiko/hooks/session-start || true",
+                "command": "curl -sf --max-time 2 -H @\"$HOME/.config/kiko/auth-header\" -H \"Content-Type: application/json\" -H \"X-Kiko-Claude-Pid: $PPID\" --data-binary @- http://127.0.0.1:47821/kiko/hooks/session-start || true",
                 "timeout": 3
             })
         );
@@ -974,6 +991,49 @@ mod tests {
 
         // The user's empty "Stop" list, and the absence of every other event, come back exactly.
         run_with(&installer, Action::Uninstall, 1_791_800_060);
+        assert_eq!(fs::read_to_string(&path).unwrap(), USER_SETTINGS);
+    }
+
+    #[test]
+    fn reinstall_adds_the_process_id_to_the_commands_of_the_previous_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = settings_in(dir.path(), Some(USER_SETTINGS));
+        let installer = installer(&path, PORT);
+        // What the previous version wrote: the same curl commands without the pid header.
+        run_with(&installer, Action::Install, 1_791_800_000);
+        let previous = fs::read_to_string(&path)
+            .unwrap()
+            .replace(" -H \\\"X-Kiko-Claude-Pid: $PPID\\\"", "");
+        assert!(!previous.contains("PPID"));
+        fs::write(&path, &previous).unwrap();
+        assert_eq!(
+            installer.state().unwrap(),
+            HooksState {
+                installed: true,
+                up_to_date: false
+            }
+        );
+
+        let preview = installer.preview(Action::Install).unwrap();
+        assert!(preview.replaces_existing && preview.adds_process_id && !preview.replaces_http);
+        installer
+            .apply(
+                Action::Install,
+                &preview.fingerprint,
+                UNIX_EPOCH + Duration::from_secs(1_791_800_060),
+            )
+            .unwrap();
+        let handlers = all_handlers(&read_json(&path));
+        let kiko: Vec<&Value> = handlers.iter().filter(|h| is_kiko_handler(h)).collect();
+        assert_eq!(kiko.len(), Hook::ALL.len() + 1, "replaced, not duplicated");
+        assert!(
+            kiko.iter()
+                .all(|h| h["command"].as_str().unwrap().contains("$PPID"))
+        );
+        assert!(installer.state().unwrap().up_to_date);
+        assert!(!installer.preview(Action::Install).unwrap().adds_process_id);
+
+        run_with(&installer, Action::Uninstall, 1_791_800_120);
         assert_eq!(fs::read_to_string(&path).unwrap(), USER_SETTINGS);
     }
 

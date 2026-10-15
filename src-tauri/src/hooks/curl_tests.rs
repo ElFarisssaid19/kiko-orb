@@ -14,6 +14,11 @@ use std::{
 
 use serde_json::{Map, Value, json};
 
+use kiko_channel::{
+    kiko::Kiko,
+    protocol::{Endpoint, Register},
+};
+
 use super::{
     events::AgentEvent,
     install::{TOKEN_HEADER, hook_command, shell_path},
@@ -283,4 +288,41 @@ fn a_wrong_token_is_refused_silently() {
         server.pending_events().is_empty(),
         "nothing reached the island"
     );
+}
+
+#[test]
+fn the_hook_command_sends_the_claude_code_process_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let (server, events) = start_server();
+    let command = hook_command(
+        server.port(),
+        &header_file(dir.path(), TOKEN),
+        Hook::SessionStart,
+        2,
+    );
+    // Claude Code runs `sh -c <command>`; here this test process plays Claude Code, so the hook's
+    // `$PPID` is this process.
+    let input = json!({ "session_id": "abc123", "cwd": "/home/user/my-project", "hook_event_name": "SessionStart", "source": "clear" });
+    assert_eq!(run_hook(&command, &input).code, Some(0));
+
+    // A channel started by the same process, with a stale CLAUDE_CODE_SESSION_ID: the pid wins.
+    let register = Register {
+        channel: "c1".into(),
+        session_id: "stale-id-from-before-clear".into(),
+        cwd: "/home/user/my-project".into(),
+        pid: 1,
+        parent_pid: std::process::id(),
+        version: "test".into(),
+    };
+    Kiko::new(server.port(), TOKEN)
+        .post(Endpoint::Register, &register, Duration::from_secs(2))
+        .unwrap();
+    let linked = events
+        .iter()
+        .find_map(|event| match event {
+            AgentEvent::ChatLinked { session_id, .. } => Some(session_id),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(linked, "abc123");
 }

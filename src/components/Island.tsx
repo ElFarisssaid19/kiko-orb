@@ -43,6 +43,9 @@ const layoutKeyOf = (s: KikoState) =>
     s.pending[0]?.request.id ?? "",
     s.pending.length,
     s.sessions.length === 0 ? (s.hooksStatus?.status ?? "") : "",
+    s.chatSessionId ?? "",
+    s.chatSessionId ? (s.chats[s.chatSessionId]?.length ?? 0) : 0,
+    s.chatSessionId ? String(s.chatLinks[s.chatSessionId] === true) : "",
   ].join("|");
 
 /**
@@ -99,12 +102,15 @@ export function Island() {
     };
   }, [wanted, view, islandWindow]);
 
-  // Escape, or focus leaving the window, folds the expanded island back to compact.
+  // Escape leaves a chat, else folds the expanded island back to compact; so does focus leaving the window.
   useEffect(() => {
     if (view !== "expanded") return;
     const collapse = () => setIslandState("compact");
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") collapse();
+      if (event.key !== "Escape") return;
+      const { chatSessionId, pending, closeChat } = useKikoStore.getState();
+      if (chatSessionId && pending.length === 0) closeChat();
+      else collapse();
     };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("blur", collapse);

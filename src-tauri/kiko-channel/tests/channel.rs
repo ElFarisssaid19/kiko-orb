@@ -2,7 +2,7 @@
 //! environment), against a fake Kiko server that speaks the channel protocol.
 
 use std::{
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, Write},
     net::TcpListener,
     path::Path,
     process::{Child, ChildStdin, Command, Stdio},
@@ -41,8 +41,20 @@ struct FakeKiko {
 }
 
 impl FakeKiko {
+    /// On a port of its own choosing: tests running in parallel can't take it first.
+    fn start_any() -> (FakeKiko, u16) {
+        let server = Server::http(("127.0.0.1", 0)).unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        (FakeKiko::serve(server), port)
+    }
+
+    /// On a port picked earlier, for a Kiko that starts after the channel.
     fn start(port: u16) -> FakeKiko {
-        let server = Arc::new(Server::http(("127.0.0.1", port)).unwrap());
+        FakeKiko::serve(Server::http(("127.0.0.1", port)).unwrap())
+    }
+
+    fn serve(server: Server) -> FakeKiko {
+        let server = Arc::new(server);
         let (seen_tx, seen) = mpsc::channel();
         let (outbox, outbox_rx) = mpsc::channel::<ChatMessage>();
         let outbox_rx = Arc::new(Mutex::new(outbox_rx));
@@ -250,8 +262,7 @@ fn handshake_declares_the_channel_and_the_reply_tool() {
 #[test]
 fn a_message_from_kiko_becomes_a_channel_event() {
     let dir = tempfile::tempdir().unwrap();
-    let port = free_port();
-    let kiko = FakeKiko::start(port);
+    let (kiko, port) = FakeKiko::start_any();
     let mut channel = Channel::spawn(Some(&write_config(dir.path(), port)), Some(SESSION));
 
     let registered = kiko.expect(|seen| match seen {
@@ -261,6 +272,8 @@ fn a_message_from_kiko_becomes_a_channel_event() {
     assert_eq!(registered.session_id, SESSION);
     assert_eq!(registered.cwd, "/home/user/my-project");
     assert_eq!(registered.pid, channel.child.id());
+    // Started by this test like Claude Code starts it: the parent is the "Claude Code" process.
+    assert_eq!(registered.parent_pid, std::process::id());
     assert_eq!(registered.channel.len(), 32);
 
     channel.handshake();
@@ -275,8 +288,7 @@ fn a_message_from_kiko_becomes_a_channel_event() {
 #[test]
 fn events_wait_for_the_end_of_the_handshake() {
     let dir = tempfile::tempdir().unwrap();
-    let port = free_port();
-    let kiko = FakeKiko::start(port);
+    let (kiko, port) = FakeKiko::start_any();
     let mut channel = Channel::spawn(Some(&write_config(dir.path(), port)), Some(SESSION));
     kiko.expect(|seen| matches!(seen, Seen::Register(_)).then_some(()));
     kiko.outbox.send(ChatMessage { id: "m1".into(), text: "early".into(), at: 1 }).unwrap();
@@ -292,8 +304,7 @@ fn events_wait_for_the_end_of_the_handshake() {
 #[test]
 fn the_reply_tool_posts_to_kiko() {
     let dir = tempfile::tempdir().unwrap();
-    let port = free_port();
-    let kiko = FakeKiko::start(port);
+    let (kiko, port) = FakeKiko::start_any();
     let mut channel = Channel::spawn(Some(&write_config(dir.path(), port)), Some(SESSION));
     let registered = kiko.expect(|seen| match seen {
         Seen::Register(register) => Some(register),
@@ -352,8 +363,7 @@ fn a_missing_config_is_not_fatal() {
 #[test]
 fn a_wrong_token_gets_no_messages() {
     let dir = tempfile::tempdir().unwrap();
-    let port = free_port();
-    let kiko = FakeKiko::start(port);
+    let (kiko, port) = FakeKiko::start_any();
     let config = dir.path().join("config.json");
     std::fs::write(&config, json!({ "port": port, "token": "wrong" }).to_string()).unwrap();
     let mut channel = Channel::spawn(Some(&config), Some(SESSION));
@@ -366,8 +376,7 @@ fn a_wrong_token_gets_no_messages() {
 fn without_a_session_it_never_contacts_kiko() {
     // e.g. a `claude mcp get` health check, or someone running it by hand.
     let dir = tempfile::tempdir().unwrap();
-    let port = free_port();
-    let kiko = FakeKiko::start(port);
+    let (kiko, port) = FakeKiko::start_any();
     let mut channel = Channel::spawn(Some(&write_config(dir.path(), port)), None);
     channel.handshake();
     let answer = channel.reply("done");
@@ -378,8 +387,7 @@ fn without_a_session_it_never_contacts_kiko() {
 #[test]
 fn closing_stdin_unregisters_and_exits() {
     let dir = tempfile::tempdir().unwrap();
-    let port = free_port();
-    let kiko = FakeKiko::start(port);
+    let (kiko, port) = FakeKiko::start_any();
     let mut channel = Channel::spawn(Some(&write_config(dir.path(), port)), Some(SESSION));
     kiko.expect(|seen| matches!(seen, Seen::Register(_)).then_some(()));
     channel.handshake();
